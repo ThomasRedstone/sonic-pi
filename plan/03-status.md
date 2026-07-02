@@ -277,23 +277,24 @@ runtime up from the mounted image, verified teardown. appimagetool
 installs user-locally (no sudo): the release download in the AppImage
 project's GitHub releases. i18n sweep complete for interactive UI text.
 
-## Remaining tail (all scoped, none blocking a usable release)
+## ✅ DockArea LANDED (2026-07-02, revisiting the deferral)
 
-1. **DockArea drag-to-rearrange** — DEFERRED DELIBERATELY (2026-07-02):
-   Panel trait requires every pane to become an EventEmitter+Focusable
-   Entity view — a rearchitecture of main.rs around per-pane views with
-   shared models. High regression risk against a working, user-verified
-   app; per the plan's "keep it shippable" rule it gets a dedicated
-   session. Fold (click) + resize (drag dividers) already cover daily use.
-2. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
+The port turned out far cheaper than scoped: scope/cues/log are read-only
+views, so they became Panel entities (macro boilerplate, observe-the-app
+re-render) with zero listener re-plumbing. The right column is a real
+DockArea — drag tabs to stack/rearrange, dividers to resize. Toggled
+panes (settings/help/nodes) stay stacked above it. Verified: tests green,
+lifecycle E2E clean; visual drag check is the user's.
+
+## Remaining tail (nothing left that this machine + this codebase can do)
+
+1. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
    editor a11y glyph metrics — PRs/issues, external cadence.
-3. **i18n**: .po migration + more locales (mechanism + de demo done).
-4. **Packaging**: mac/windows scripts (need those machines). CI artifact
-   upload DONE — every push builds the AppImage (SKIP_SMOKE: runners
-   have no display/audio; boot smokes remain dev-machine checks).
-5. **Qt retirement** per roadmap exit criteria — REQUIRES sustained
-   side-by-side daily use (weeks). The code work to enable that
-   comparison is done: both apps run, same features exercised.
+2. **i18n**: .po migration + more locales (mechanism + de demo done).
+3. **Packaging**: mac/windows scripts (need those machines). CI AppImage
+   artifacts on every push: DONE.
+4. **Qt retirement** per roadmap exit criteria — REQUIRES sustained
+   side-by-side daily use (weeks). Both apps run; comparison enabled.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
