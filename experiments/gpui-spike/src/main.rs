@@ -1516,9 +1516,9 @@ impl SonicSpike {
         let run_pulsing = self.flash > 0.55;
         let stop_pulsing = self.stop_flash > 0.55;
         // Colour-only pulses: labels stay fixed so the header never reflows.
-        let run = Button::new("run-code").label("Run ▶");
+        let run = Button::new("run-code").label(format!("{} ▶", self.i18n.tr("Run")));
         let run = if run_pulsing { run.success() } else { run.primary() };
-        let stop = Button::new("stop-code").label("Stop ■");
+        let stop = Button::new("stop-code").label(format!("{} ■", self.i18n.tr("Stop")));
         let stop = if stop_pulsing {
             stop.warning()
         } else if playing {
@@ -1555,7 +1555,11 @@ impl SonicSpike {
                 div()
                     .text_xs()
                     .text_color(if playing { cx.theme().primary } else { cx.theme().muted_foreground })
-                    .child(if playing { "● playing" } else { "○ idle" }),
+                    .child(if playing {
+                        format!("● {}", self.i18n.tr("playing"))
+                    } else {
+                        format!("○ {}", self.i18n.tr("idle"))
+                    }),
             )
             .child(self.a11y_ctl(
                 "a11y-run",
@@ -1574,7 +1578,7 @@ impl SonicSpike {
                 cx,
             ))
             .child({
-                let rec = Button::new("record").label("⏺ Rec");
+                let rec = Button::new("record").label(format!("⏺ {}", self.i18n.tr("Rec")));
                 let rec = if self.recording.is_some() { rec.danger() } else { rec.outline() };
                 self.a11y_ctl(
                     "a11y-rec",
@@ -1600,7 +1604,7 @@ impl SonicSpike {
                 "Align buffer indentation",
                 Cmd::Align,
                 Button::new("align")
-                    .label("⇥ Align")
+                    .label(format!("⇥ {}", self.i18n.tr("Align")))
                     .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Align, w, cx)))
                     .into_any_element(),
                 cx,
@@ -1736,7 +1740,7 @@ impl SonicSpike {
             }
             pane = pane.child(row);
         } else if !query.trim().is_empty() {
-            pane = pane.child(div().text_xs().child("No matches."));
+            pane = pane.child(div().text_xs().child(self.i18n.tr("No matches.").to_string()));
         }
 
         if let Some(entry) = self.help_selected.as_deref().and_then(|l| self.vocab.get(l)) {
@@ -1810,8 +1814,8 @@ impl SonicSpike {
                 .gap_1()
                 .items_center()
                 .child(div().text_xs().child(match bpm {
-                    Some(b) => format!("Tempo {b:.1} BPM"),
-                    None => "Tempo (waiting for engine)".to_string(),
+                    Some(b) => format!("{} {b:.1} BPM", self.i18n.tr("Tempo")),
+                    None => format!("{} ({})", self.i18n.tr("Tempo"), self.i18n.tr("waiting for engine")),
                 }))
                 .child(Button::new("bpm-down").xsmall().outline().label("−5").on_click(
                     cx.listener(|this, _, _, cx| {
@@ -1865,13 +1869,13 @@ impl SonicSpike {
             }
             None => {
                 pane = pane
-                    .child(div().text_xs().child("Output devices: waiting for the engine…"));
+                    .child(div().text_xs().child(format!("{}…", self.i18n.tr("Output devices: waiting for the engine"))));
             }
         }
 
         match &self.in_devices {
             Some(d) => {
-                pane = pane.child(div().text_xs().child("Input"));
+                pane = pane.child(div().text_xs().child(self.i18n.tr("Input").to_string()));
                 let current = d.current_device.clone();
                 for (i, name) in d.devices.iter().enumerate() {
                     let btn = Button::new(("in-dev", i)).xsmall().label(name.clone());
@@ -1884,7 +1888,7 @@ impl SonicSpike {
                     })));
                 }
                 pane = pane.child(
-                    Button::new("in-dev-none").xsmall().outline().label("Disable input").on_click(
+                    Button::new("in-dev-none").xsmall().outline().label(self.i18n.tr("Disable input").to_string()).on_click(
                         cx.listener(|this, _, _, cx| {
                             this.backend.switch_audio(None, Some("__none__"));
                             this.log.push(LogLine::info("→ Audio input disabled"));
@@ -1895,7 +1899,7 @@ impl SonicSpike {
             }
             None => {
                 pane =
-                    pane.child(div().text_xs().child("Input devices: waiting for the engine…"));
+                    pane.child(div().text_xs().child(format!("{}…", self.i18n.tr("Input devices: waiting for the engine"))));
             }
         }
 

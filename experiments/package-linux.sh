@@ -136,6 +136,15 @@ fi
 if command -v appimagetool >/dev/null 2>&1; then
   echo "==> building AppImage"
   (cd "${SCRIPT_DIR}/dist" && ARCH=x86_64 appimagetool SonicOxide.AppDir SonicOxide-x86_64.AppImage)
+  echo "==> AppImage smoke test"
+  IMGOUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${SCRIPT_DIR}/dist/SonicOxide-x86_64.AppImage" 2>&1 || true)"
+  if echo "${IMGOUT}" | grep -q "spider alive: true, engine alive: true" \
+      && echo "${IMGOUT}" | grep -q "children stopped (verified)"; then
+    echo "==> APPIMAGE SMOKE TEST PASS"
+  else
+    echo "==> APPIMAGE SMOKE TEST FAIL" >&2
+    exit 1
+  fi
   echo "==> AppImage: ${SCRIPT_DIR}/dist/SonicOxide-x86_64.AppImage"
 else
   echo "==> appimagetool not found — AppDir is ready at ${APPDIR}"
