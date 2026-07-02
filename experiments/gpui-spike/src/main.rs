@@ -14,6 +14,7 @@
 //! additionally goes through `EditorA11y`, a custom element that writes the
 //! buffer text into the AccessKit node *value* — the first Tier-2 increment.
 
+mod store;
 mod vocab;
 
 use std::cell::RefCell;
@@ -23,6 +24,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use vocab::{word_prefix_at, Vocab, VocabKind};
+
+// Live-coding keyboard shortcuts (bound in `main`, handled on the root view).
+actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer]);
 
 use gpui::*;
 use gpui_component::{
@@ -64,6 +68,12 @@ end
 play_chord [:c4, :e4, :g4]
 "#,
 ];
+
+/// Qt parity: ten workspaces. Buffers beyond the seeds start empty.
+const BUFFER_COUNT: usize = 10;
+
+/// Autosave cadence in 33ms ticks (~5s).
+const AUTOSAVE_TICKS: u32 = 150;
 
 const CUES_EXAMPLE: &str = "\
 /beat        [t=12.500]  16
@@ -963,6 +973,9 @@ struct SonicSpike {
     stop_flash: f32,
     backend: Backend,
     incoming: Arc<Mutex<Vec<ClientEvent>>>,
+    /// Workspace persistence: where buffers autosave, and the tick countdown.
+    store_dir: PathBuf,
+    autosave_in: u32,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -981,16 +994,22 @@ impl SonicSpike {
         let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
         let vocab = Rc::new(Vocab::load(&app_root));
 
-        let buffers: Vec<Entity<InputState>> = BUFFER_SEEDS
-            .iter()
-            .map(|seed| {
+        // Ten buffers: stored content wins, then seed, then empty.
+        let store_dir = store::default_store_dir();
+        let stored = store::load_buffers(&store_dir, BUFFER_COUNT);
+        let buffers: Vec<Entity<InputState>> = (0..BUFFER_COUNT)
+            .map(|i| {
+                let initial: String = stored[i]
+                    .clone()
+                    .or_else(|| BUFFER_SEEDS.get(i).map(|s| s.to_string()))
+                    .unwrap_or_default();
                 let vocab = vocab.clone();
                 cx.new(|cx| {
                     let mut state = InputState::new(window, cx)
                         .code_editor("ruby")
                         .line_number(true)
                         .soft_wrap(false)
-                        .default_value(*seed);
+                        .default_value(initial);
                     state.lsp.completion_provider =
                         Some(Rc::new(SonicCompletions(vocab.clone())));
                     state
@@ -1004,11 +1023,13 @@ impl SonicSpike {
         let incoming: Arc<Mutex<Vec<ClientEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let (backend, status) = Backend::connect(incoming.clone());
 
-        // Clean shutdown: ask the daemon to exit (and wait for it, bounded)
-        // before the app goes away. Runs synchronously inside the quit hook —
-        // GPUI only polls the returned future for SHUTDOWN_TIMEOUT (200ms),
-        // which is too short for the daemon to tear down Spider/SuperSonic.
-        cx.on_app_quit(|this: &mut Self, _cx| {
+        // Clean shutdown: save the workspace, then ask the daemon to exit
+        // (and wait for it, bounded) before the app goes away. Runs
+        // synchronously inside the quit hook — GPUI only polls the returned
+        // future for SHUTDOWN_TIMEOUT (200ms), which is too short for the
+        // daemon to tear down Spider/SuperSonic.
+        cx.on_app_quit(|this: &mut Self, cx| {
+            this.save_workspace(cx);
             this.backend.shutdown();
             async {}
         })
@@ -1025,6 +1046,11 @@ impl SonicSpike {
                         }
                         this.flash = (this.flash - 0.06).max(0.0);
                         this.stop_flash = (this.stop_flash - 0.06).max(0.0);
+                        this.autosave_in = this.autosave_in.saturating_sub(1);
+                        if this.autosave_in == 0 {
+                            this.autosave_in = AUTOSAVE_TICKS;
+                            this.save_workspace(cx);
+                        }
                         this.poll_scope();
                         let events: Vec<ClientEvent> =
                             std::mem::take(&mut *this.incoming.lock().unwrap());
@@ -1093,6 +1119,8 @@ impl SonicSpike {
             stop_flash: 0.0,
             backend,
             incoming,
+            store_dir,
+            autosave_in: AUTOSAVE_TICKS,
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -1148,6 +1176,70 @@ impl SonicSpike {
         }
     }
 
+    /// Persist all buffers to the workspace store (autosave + quit path).
+    fn save_workspace(&self, cx: &App) {
+        let texts: Vec<String> =
+            self.buffers.iter().map(|b| b.read(cx).value().to_string()).collect();
+        store::save_buffers(&self.store_dir, &texts);
+    }
+
+    /// Run the active buffer (button and Alt+R share this).
+    fn run_active(&mut self, cx: &mut Context<Self>) {
+        let code = self.buffers[self.active].read(cx).value().to_string();
+        // A fresh run clears the previous run's error underlines.
+        self.buffers[self.active].update(cx, |s, cx| {
+            if let Some(set) = s.diagnostics_mut() {
+                set.clear();
+            }
+            cx.notify();
+        });
+        self.backend.run(&format!("buffer{}", self.active), &code);
+        self.flash = 1.0;
+        self.playing = true;
+        // Local echo so the click lands in the Log instantly, before the
+        // spider's own reply arrives.
+        self.log.push(LogLine::info(format!("→ Run sent (buffer {})", self.active + 1)));
+        cx.notify();
+    }
+
+    /// Stop all runs (button and Alt+S share this).
+    fn stop_all(&mut self, cx: &mut Context<Self>) {
+        self.backend.stop();
+        self.playing = false;
+        self.stop_flash = 1.0;
+        self.log.push(LogLine::info("→ Stop sent"));
+        cx.notify();
+    }
+
+    fn comment_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ed = self.buffers[self.active].clone();
+        let (text, sel) = {
+            let s = ed.read(cx);
+            (s.value().to_string(), s.selected_range())
+        };
+        if let Some(new_text) = toggle_comment(&text, sel) {
+            ed.update(cx, |s, cx| s.set_value(new_text, window, cx));
+        }
+        cx.notify();
+    }
+
+    fn align_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ed = self.buffers[self.active].clone();
+        let text = ed.read(cx).value().to_string();
+        let aligned = reindent(&text);
+        if aligned != text {
+            ed.update(cx, |s, cx| s.set_value(aligned, window, cx));
+        }
+        cx.notify();
+    }
+
+    fn select_buffer(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i < self.buffers.len() {
+            self.active = i;
+            cx.notify();
+        }
+    }
+
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.running;
         let playing = self.playing;
@@ -1192,60 +1284,21 @@ impl SonicSpike {
             )
             .child(
                 run
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let code = this.buffers[this.active].read(cx).value().to_string();
-                        // A fresh run clears the previous run's error underlines.
-                        this.buffers[this.active].update(cx, |s, cx| {
-                            if let Some(set) = s.diagnostics_mut() {
-                                set.clear();
-                            }
-                            cx.notify();
-                        });
-                        this.backend.run(&format!("buffer{}", this.active), &code);
-                        this.flash = 1.0;
-                        this.playing = true;
-                        // Local echo so the click lands in the Log instantly,
-                        // before the spider's own reply arrives.
-                        this.log.push(LogLine::info(format!(
-                            "→ Run sent (buffer {})",
-                            this.active + 1
-                        )));
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.run_active(cx))),
             )
-            .child(stop.on_click(cx.listener(|this, _, _, cx| {
-                this.backend.stop();
-                this.playing = false;
-                this.stop_flash = 1.0;
-                this.log.push(LogLine::info("→ Stop sent"));
-                cx.notify();
-            })))
+            .child(stop.on_click(cx.listener(|this, _, _, cx| this.stop_all(cx))))
             .child(
                 Button::new("toggle-comment")
                     .label("#")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let ed = this.buffers[this.active].clone();
-                        let (text, sel) = {
-                            let s = ed.read(cx);
-                            (s.value().to_string(), s.selected_range())
-                        };
-                        if let Some(new_text) = toggle_comment(&text, sel) {
-                            ed.update(cx, |s, cx| s.set_value(new_text, window, cx));
-                        }
-                        cx.notify();
+                        this.comment_active(window, cx)
                     })),
             )
             .child(
                 Button::new("align")
                     .label("⇥ Align")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let ed = this.buffers[this.active].clone();
-                        let text = ed.read(cx).value().to_string();
-                        let aligned = reindent(&text);
-                        if aligned != text {
-                            ed.update(cx, |s, cx| s.set_value(aligned, window, cx));
-                        }
-                        cx.notify();
+                        this.align_active(window, cx)
                     })),
             )
             .child(
@@ -1276,10 +1329,7 @@ impl SonicSpike {
         h_flex().gap_1().p_1().children((0..self.buffers.len()).map(move |i| {
             let btn = Button::new(("buffer-tab", i)).label(format!("{}", i + 1)).xsmall();
             let btn = if i == active { btn.primary() } else { btn };
-            btn.on_click(cx.listener(move |this, _, _, cx| {
-                this.active = i;
-                cx.notify();
-            }))
+            btn.on_click(cx.listener(move |this, _, _, cx| this.select_buffer(i, cx)))
         }))
     }
 
@@ -1480,6 +1530,22 @@ impl Render for SonicSpike {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|this, _: &RunBuffer, _, cx| this.run_active(cx)))
+            .on_action(cx.listener(|this, _: &StopAll, _, cx| this.stop_all(cx)))
+            .on_action(
+                cx.listener(|this, _: &CommentToggle, window, cx| this.comment_active(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &AlignBuffer, window, cx| this.align_active(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NextBuffer, _, cx| {
+                let next = (this.active + 1) % this.buffers.len();
+                this.select_buffer(next, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PrevBuffer, _, cx| {
+                let prev = (this.active + this.buffers.len() - 1) % this.buffers.len();
+                this.select_buffer(prev, cx);
+            }))
             .child(self.header(cx))
             .child(
                 h_resizable("main")
@@ -1504,6 +1570,17 @@ fn main() {
         // Sonic Pi is dark by default; ☀/☾ in the header toggles.
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
         cx.activate(true);
+
+        // Live-coder shortcuts (Qt parity: Alt+R run, Alt+S stop, …). Global
+        // context so they fire even while the editor holds focus.
+        cx.bind_keys([
+            KeyBinding::new("alt-r", RunBuffer, None),
+            KeyBinding::new("alt-s", StopAll, None),
+            KeyBinding::new("alt-/", CommentToggle, None),
+            KeyBinding::new("alt-m", AlignBuffer, None),
+            KeyBinding::new("alt-]", NextBuffer, None),
+            KeyBinding::new("alt-[", PrevBuffer, None),
+        ]);
 
         // Closing the last window quits the app (which fires the on_app_quit
         // shutdown hook); without this the process — and the daemon — lingers.
