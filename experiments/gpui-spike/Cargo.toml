@@ -3,6 +3,8 @@ name = "sonic-gpui-spike"
 version = "0.0.0"
 edition = "2024"
 publish = false
+# `cargo run` just works — no --bin needed (shm_writer is the other target).
+default-run = "sonic-gpui-spike"
 
 # NOTE: GPUI + gpui-component are pre-1.0 and change frequently.
 # These revs are pinned so the graph resolves consistently:

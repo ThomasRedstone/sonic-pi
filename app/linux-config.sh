@@ -33,6 +33,14 @@ while [ -n "$1" ]; do
     esac
 done
 
+# ruby_help.h is generated (docs -> C header) and cmake fails with a cryptic
+# "Cannot find source file" without it. Self-heal instead of assuming the
+# reader knows to run linux-pre-translations.sh first.
+if [ ! -f "${SCRIPT_DIR}/gui/utils/ruby_help.h" ]; then
+    echo "gui/utils/ruby_help.h missing — generating it (linux-pre-translations.sh)..."
+    "${SCRIPT_DIR}/linux-pre-translations.sh"
+fi
+
 echo "Creating build directory..."
 mkdir -p "${SCRIPT_DIR}/build"
 
