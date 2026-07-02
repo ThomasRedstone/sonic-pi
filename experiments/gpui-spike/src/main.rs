@@ -94,12 +94,19 @@ struct LogLine {
     run: Option<i32>,
     error: bool,
     indent: bool,
+    /// Engine-internals noise (unmodelled OSC etc.) — hidden unless the
+    /// debug toggle is on (Qt parity: hide/reveal SuperSonic debug logs).
+    debug: bool,
     text: String,
 }
 
 impl LogLine {
     fn info(text: impl Into<String>) -> LogLine {
-        LogLine { run: None, error: false, indent: false, text: text.into() }
+        LogLine { run: None, error: false, indent: false, debug: false, text: text.into() }
+    }
+
+    fn debug(text: impl Into<String>) -> LogLine {
+        LogLine { run: None, error: false, indent: false, debug: true, text: text.into() }
     }
 }
 
@@ -113,12 +120,14 @@ fn log_lines_for(ev: &ClientEvent) -> Vec<LogLine> {
                 run: Some(m.job_id),
                 error: false,
                 indent: false,
+                debug: false,
                 text: format!("{{run {}}} {}", m.job_id, m.thread_name),
             }];
             rows.extend(m.multi.iter().map(|d| LogLine {
                 run: Some(m.job_id),
                 error: false,
                 indent: true,
+                debug: false,
                 text: d.text.clone(),
             }));
             rows
@@ -131,7 +140,7 @@ fn log_lines_for(ev: &ClientEvent) -> Vec<LogLine> {
             } else {
                 m.text.clone()
             };
-            vec![LogLine { run, error, indent: false, text }]
+            vec![LogLine { run, error, indent: false, debug: false, text }]
         }
         ClientEvent::Status(s) => vec![LogLine::info(format!("[{:?}] {}", s.kind, s.id))],
         ClientEvent::SpiderReady => vec![LogLine::info("[spider ready]")],
@@ -149,7 +158,8 @@ fn log_lines_for(ev: &ClientEvent) -> Vec<LogLine> {
         ))],
         ClientEvent::Scsynth(i) => vec![LogLine::info(format!("[scsynth] {}", i.text))],
         ClientEvent::Cue(_) => vec![], // rendered in the Cues pane
-        other => vec![LogLine::info(format!("{other:?}"))],
+        ClientEvent::Unhandled { addr } => vec![LogLine::debug(format!("[osc] {addr}"))],
+        other => vec![LogLine::debug(format!("{other:?}"))],
     }
 }
 
@@ -1018,6 +1028,8 @@ struct SonicSpike {
     nodes_open: bool,
     node_rows: Vec<NodeInfo>,
     node_version: u32,
+    /// Show engine-internals rows in the Log (unmodelled OSC etc.).
+    show_debug: bool,
     /// Latest real waveform window (kept between publishes so the scope
     /// doesn't blank when the engine is silent).
     scope_samples: Vec<f32>,
@@ -1217,6 +1229,7 @@ impl SonicSpike {
             nodes_open: false,
             node_rows: Vec::new(),
             node_version: 0,
+            show_debug: false,
             scope_samples: Vec::new(),
             show_spectrum: false,
             spectrum_rolling: Vec::new(),
@@ -1542,6 +1555,7 @@ impl SonicSpike {
                     cx.notify();
                 },
             )))
+            .child(self.header_debug_toggle(cx))
             // Window controls: GNOME Wayland gives us no server-side
             // decorations, so minimise/maximise/close live here. Close goes
             // through remove_window → on_window_closed → the clean-shutdown
@@ -1755,6 +1769,15 @@ impl SonicSpike {
         pane.overflow_y_scroll().into_any_element()
     }
 
+    fn header_debug_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let btn = Button::new("debug-toggle").label("Dbg");
+        let btn = if self.show_debug { btn.primary() } else { btn };
+        btn.on_click(cx.listener(|this, _, _, cx| {
+            this.show_debug = !this.show_debug;
+            cx.notify();
+        }))
+    }
+
     /// Live node tree: groups and synths from the engine's shm mirror,
     /// indented by parent depth.
     fn nodes(&self, cx: &Context<Self>) -> AnyElement {
@@ -1821,6 +1844,10 @@ impl SonicSpike {
             .aria_label(a11y_label)
             .flex_1()
             .min_h(px(60.))
+            // Long content must shrink with the pane, not widen the layout
+            // past the window (which pushed the titlebar controls off the
+            // right edge on small windows).
+            .min_w(px(0.))
             .border_1()
             .border_color(border)
             .child(
@@ -1981,7 +2008,15 @@ impl Render for SonicSpike {
             self.log.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
         )
         .into();
-        let recent: Vec<LogLine> = self.log.iter().rev().take(16).cloned().collect();
+        let show_debug = self.show_debug;
+        let recent: Vec<LogLine> = self
+            .log
+            .iter()
+            .rev()
+            .filter(|l| show_debug || !l.debug)
+            .take(16)
+            .cloned()
+            .collect();
         let log_fg = cx.theme().foreground;
         let log_err = cx.theme().danger;
 
@@ -2085,6 +2120,7 @@ impl Render for SonicSpike {
         v_flex()
             .id("sonic-spike")
             .size_full()
+            .overflow_hidden()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|this, _: &RunBuffer, _, cx| this.run_active(cx)))
