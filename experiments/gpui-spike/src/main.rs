@@ -49,6 +49,7 @@ use sonicpi_core::paths::{resolve, SonicPiPath};
 use sonicpi_core::ports::PortId;
 use sonicpi_core::process::Daemon;
 use sonicpi_core::rosc::{OscMessage, OscType};
+use sonicpi_core::supervisor::Supervisor;
 use sonicpi_core::{
     protocol, ApiClient, AudioDevicesInfo, AudioInputDevicesInfo, ClientEvent, Session, StatusType,
 };
@@ -449,6 +450,13 @@ impl ApiClient for LogSink {
     }
 }
 
+/// How the real runtime was booted: the classic Ruby daemon (4 processes) or
+/// the Phase-4 Rust supervisor (3 — the app owns Spider + SuperSonic).
+enum Runtime {
+    DaemonRb(Daemon),
+    Rust(Supervisor),
+}
+
 // ── Backend: real daemon session, or in-process loopback ────────────────────
 
 enum Backend {
@@ -456,7 +464,7 @@ enum Backend {
     /// (senders + incoming OSC server + keep-alive).
     Real {
         session: Session,
-        daemon: Daemon,
+        runtime: Runtime,
         /// SuperSonic's UDP port — names its shm segment (`/SuperSonic_<port>`).
         scsynth_port: u16,
     },
@@ -471,16 +479,35 @@ enum Backend {
 }
 
 impl Backend {
-    /// Try the real daemon (4s budget), fall back to loopback. Returns the
-    /// backend plus a human status line for the log.
+    /// Try the real runtime — the Phase-4 Rust supervisor when
+    /// `SONIC_OXIDE_SUPERVISOR=1` (3 processes, app owns the children),
+    /// otherwise the classic daemon.rb (4s handshake budget). Falls back to
+    /// loopback. Returns the backend plus a human status line for the log.
     fn connect(sink: Arc<Mutex<Vec<ClientEvent>>>) -> (Backend, String) {
-        match Self::try_real(sink.clone()) {
-            Ok(b) => (b, "=> Connected to REAL Sonic Pi daemon.".into()),
+        let use_supervisor = std::env::var("SONIC_OXIDE_SUPERVISOR").as_deref() == Ok("1");
+        let attempt = if use_supervisor {
+            Self::try_supervisor(sink.clone())
+                .map(|b| (b, "=> Booted via Rust supervisor (3 processes, no daemon.rb)."))
+        } else {
+            Self::try_real(sink.clone())
+                .map(|b| (b, "=> Connected to REAL Sonic Pi daemon."))
+        };
+        match attempt {
+            Ok((b, msg)) => (b, msg.into()),
             Err(why) => {
                 let b = Self::loopback(sink);
-                (b, format!("=> Real daemon unavailable ({why}); using loopback spider."))
+                (b, format!("=> Real runtime unavailable ({why}); using loopback spider."))
             }
         }
+    }
+
+    fn try_supervisor(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let sup = Supervisor::boot(&root).map_err(|e| e.to_string())?;
+        let session =
+            Session::connect(&sup.ports, Arc::new(LogSink(sink))).map_err(|e| e.to_string())?;
+        let scsynth_port = sup.ports.get(PortId::Scsynth);
+        Ok(Backend::Real { session, runtime: Runtime::Rust(sup), scsynth_port })
     }
 
     fn try_real(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
@@ -507,7 +534,7 @@ impl Backend {
         let session = Session::connect(&daemon.ports, Arc::new(LogSink(sink)))
             .map_err(|e| e.to_string())?;
         let scsynth_port = daemon.ports.get(PortId::Scsynth);
-        Ok(Backend::Real { session, daemon, scsynth_port })
+        Ok(Backend::Real { session, runtime: Runtime::DaemonRb(daemon), scsynth_port })
     }
 
     fn loopback(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Backend {
@@ -643,13 +670,24 @@ impl Backend {
     }
 
     fn shutdown(&mut self) {
-        if let Backend::Real { session, daemon, .. } = self {
-            let _ = session.shutdown();
-            if daemon.wait_timeout(Duration::from_secs(3)) {
-                eprintln!("sonic-oxide: daemon exited cleanly");
-            } else {
-                eprintln!("sonic-oxide: daemon didn't exit in 3s; killing");
-                daemon.kill();
+        if let Backend::Real { session, runtime, .. } = self {
+            match runtime {
+                Runtime::DaemonRb(daemon) => {
+                    let _ = session.shutdown(); // polite /daemon/exit
+                    if daemon.wait_timeout(Duration::from_secs(3)) {
+                        eprintln!("sonic-oxide: daemon exited cleanly");
+                    } else {
+                        eprintln!("sonic-oxide: daemon didn't exit in 3s; killing");
+                        daemon.kill();
+                    }
+                }
+                Runtime::Rust(sup) => {
+                    if sup.shutdown_verified() {
+                        eprintln!("sonic-oxide: supervisor children stopped (verified)");
+                    } else {
+                        eprintln!("sonic-oxide: WARNING — a supervisor child survived shutdown");
+                    }
+                }
             }
         }
     }

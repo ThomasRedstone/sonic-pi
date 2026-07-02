@@ -33,6 +33,25 @@ impl Ports {
         self.map[&id]
     }
 
+    /// Build a Ports table directly (the Rust supervisor allocates its own
+    /// ports instead of parsing a daemon handshake).
+    pub fn from_parts(
+        daemon: u16,
+        gui_listen: u16,
+        gui_send: u16,
+        scsynth: u16,
+        osc_cues: u16,
+        token: i32,
+    ) -> Ports {
+        let mut map = HashMap::new();
+        map.insert(PortId::Daemon, daemon);
+        map.insert(PortId::GuiListenToSpider, gui_listen);
+        map.insert(PortId::GuiSendToSpider, gui_send);
+        map.insert(PortId::Scsynth, scsynth);
+        map.insert(PortId::TauOscCues, osc_cues);
+        Ports { map, token }
+    }
+
     /// Parse the daemon's handshake line. Positional, per `StartBootDaemon`:
     ///
     /// ```text
