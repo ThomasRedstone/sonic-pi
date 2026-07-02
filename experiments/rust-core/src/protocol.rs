@@ -1,0 +1,405 @@
+//! The OSC vocabulary — addresses, outgoing builders, and the incoming parser.
+//!
+//! Addresses and argument shapes are taken verbatim from the C++:
+//!   * outgoing (core → spider/daemon/supersonic): `sonicpi_api.cpp`
+//!   * incoming (spider → core): `osc/osc_handler.cpp`
+//!
+//! Convention (matches the C++): every spider-bound message is prefixed with
+//! the session token as an `Int(i32)`.
+
+use rosc::{OscMessage, OscType};
+
+use crate::client::*;
+
+/// Known OSC addresses.
+pub mod addr {
+    // ── Outgoing: core → Spider runtime (port `gui_send_to_spider`) ──────────
+    pub const SAVE_AND_RUN_BUFFER: &str = "/save-and-run-buffer";
+    pub const STOP_ALL_JOBS: &str = "/stop-all-jobs";
+    pub const PING: &str = "/ping";
+    pub const LOAD_BUFFER: &str = "/load-buffer";
+    pub const SAVE_BUFFER: &str = "/save-buffer";
+    pub const BUFFER_NEWLINE_AND_INDENT: &str = "/buffer-newline-and-indent";
+    pub const SET_GLOBAL_TIMEWARP: &str = "/set-global-timewarp";
+
+    // ── Outgoing: core → Boot daemon (port `daemon`) ─────────────────────────
+    pub const DAEMON_KEEP_ALIVE: &str = "/daemon/keep-alive";
+    pub const DAEMON_EXIT: &str = "/daemon/exit";
+
+    // ── Outgoing: core → SuperSonic (port `scsynth`) ─────────────────────────
+    pub const CLOCK_TEMPO_SET: &str = "/clock/tempo/set";
+    pub const CLOCK_VISIBILITY: &str = "/clock/visibility";
+    pub const CLOCK_AUDIO_PUBLISH_SET: &str = "/clock/audio/publish/set";
+    pub const CLOCK_PEER_NAME_SET: &str = "/clock/peer_name/set";
+    pub const SUPERSONIC_DEVICES_REPORT: &str = "/supersonic/devices/report";
+
+    // ── Incoming: Spider/SuperSonic → core (port `gui_listen_to_spider`) ─────
+    pub const LOG_MULTI_MESSAGE: &str = "/log/multi_message";
+    pub const LOG_INFO: &str = "/log/info";
+    pub const ERROR: &str = "/error";
+    pub const SYNTAX_ERROR: &str = "/syntax_error";
+    pub const ACK: &str = "/ack";
+    pub const RUNS_ALL_COMPLETED: &str = "/runs/all-completed";
+    pub const EXITED: &str = "/exited";
+    pub const EXITED_WITH_BOOT_ERROR: &str = "/exited-with-boot-error";
+    pub const VERSION: &str = "/version";
+    pub const LINK_BPM: &str = "/link-bpm";
+    pub const LINK_NUM_PEERS: &str = "/link-num-peers";
+    pub const SPIDER_READY: &str = "/spider/ready";
+    pub const INCOMING_OSC: &str = "/incoming/osc";
+    pub const MIDI_IN_PORTS: &str = "/midi/in-ports";
+    pub const MIDI_OUT_PORTS: &str = "/midi/out-ports";
+    pub const GAMEPAD_DEVICES_LIST: &str = "/gamepad/devices-list";
+    pub const UPDATE_INFO_TEXT: &str = "/update-info-text";
+    pub const SUPERSONIC_DEVICES: &str = "/supersonic/devices";
+    pub const SUPERSONIC_INPUT_DEVICES: &str = "/supersonic/input-devices";
+    pub const SUPERSONIC_INFO: &str = "/supersonic/info";
+}
+
+fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
+    OscMessage { addr: addr.to_string(), args }
+}
+
+/// Outgoing message builders.
+pub mod out {
+    use super::*;
+
+    /// `/save-and-run-buffer [token] [name] [code] [name]` — this is how the
+    /// GUI runs a buffer (see `SonicPiAPI::Run`/`SaveAndRunBuffer`).
+    pub fn run_buffer(token: i32, name: &str, code: &str) -> OscMessage {
+        msg(
+            addr::SAVE_AND_RUN_BUFFER,
+            vec![
+                OscType::Int(token),
+                OscType::String(name.to_string()),
+                OscType::String(code.to_string()),
+                OscType::String(name.to_string()),
+            ],
+        )
+    }
+
+    /// `/stop-all-jobs [token]`.
+    pub fn stop_all_jobs(token: i32) -> OscMessage {
+        msg(addr::STOP_ALL_JOBS, vec![OscType::Int(token)])
+    }
+
+    /// `/ping [token] [tag]` — used to detect the server coming up.
+    pub fn ping(token: i32, tag: &str) -> OscMessage {
+        msg(addr::PING, vec![OscType::Int(token), OscType::String(tag.to_string())])
+    }
+
+    /// `/daemon/keep-alive [token]` — sent to the daemon every ~4s; if it stops
+    /// arriving the daemon tears down Spider + SuperSonic (the kill switch).
+    pub fn keep_alive(token: i32) -> OscMessage {
+        msg(addr::DAEMON_KEEP_ALIVE, vec![OscType::Int(token)])
+    }
+
+    /// `/daemon/exit [token]` — clean shutdown request to the daemon.
+    pub fn daemon_exit(token: i32) -> OscMessage {
+        msg(addr::DAEMON_EXIT, vec![OscType::Int(token)])
+    }
+
+    /// `/set-global-timewarp [token] [time]`.
+    pub fn set_global_timewarp(token: i32, time: f64) -> OscMessage {
+        msg(addr::SET_GLOBAL_TIMEWARP, vec![OscType::Int(token), OscType::Double(time)])
+    }
+}
+
+// ── Incoming parsing ─────────────────────────────────────────────────────────
+
+fn arg_i32(m: &OscMessage, i: usize) -> Option<i32> {
+    match m.args.get(i)? {
+        OscType::Int(v) => Some(*v),
+        _ => None,
+    }
+}
+fn arg_str(m: &OscMessage, i: usize) -> Option<String> {
+    match m.args.get(i)? {
+        OscType::String(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+fn arg_f64(m: &OscMessage, i: usize) -> Option<f64> {
+    match m.args.get(i)? {
+        OscType::Double(v) => Some(*v),
+        OscType::Float(v) => Some(*v as f64),
+        OscType::Int(v) => Some(*v as f64),
+        _ => None,
+    }
+}
+
+/// Parse an incoming OSC message into a `ClientEvent`, or `None` if it's not a
+/// message we route. Mirrors the dispatch in `osc_handler.cpp`.
+pub fn parse_incoming(m: &OscMessage) -> Option<ClientEvent> {
+    use ClientEvent as E;
+    match m.addr.as_str() {
+        addr::ACK => Some(E::Status(StatusInfo {
+            kind: StatusType::Ack,
+            id: arg_str(m, 0).unwrap_or_default(),
+        })),
+        addr::RUNS_ALL_COMPLETED => Some(E::Status(StatusInfo {
+            kind: StatusType::AllComplete,
+            id: arg_str(m, 0).unwrap_or_default(),
+        })),
+        addr::EXITED => Some(E::Status(StatusInfo {
+            kind: StatusType::Exited,
+            id: arg_str(m, 0).unwrap_or_default(),
+        })),
+        addr::EXITED_WITH_BOOT_ERROR => {
+            Some(E::BootError(arg_str(m, 0).unwrap_or_default()))
+        }
+        addr::SPIDER_READY => Some(E::SpiderReady),
+        addr::LINK_BPM => arg_f64(m, 0).map(E::Bpm),
+        addr::LINK_NUM_PEERS => arg_i32(m, 0).map(E::ActiveLinks),
+        addr::LOG_INFO => Some(E::Report(MessageInfo {
+            style: arg_i32(m, 0).unwrap_or(0),
+            ..MessageInfo::simple(MessageType::Info, arg_str(m, 1).unwrap_or_default())
+        })),
+        addr::ERROR => Some(E::Report(parse_error(m, MessageType::RuntimeError))),
+        addr::SYNTAX_ERROR => Some(E::Report(parse_error(m, MessageType::SyntaxError))),
+        addr::LOG_MULTI_MESSAGE => Some(E::Report(parse_multi(m))),
+        addr::INCOMING_OSC => Some(E::Cue(CueInfo {
+            time: String::new(),
+            address: arg_str(m, 0).unwrap_or_default(),
+            id: arg_i32(m, 1).unwrap_or(0),
+            args: arg_str(m, 2).unwrap_or_default(),
+            index: 0,
+        })),
+        addr::VERSION => Some(E::Version(VersionInfo {
+            version: arg_str(m, 0).unwrap_or_default(),
+            num: arg_i32(m, 1).unwrap_or(0),
+            latest_version: arg_str(m, 2).unwrap_or_default(),
+            latest_num: arg_i32(m, 3).unwrap_or(0),
+            platform: arg_str(m, 7).unwrap_or_default(),
+        })),
+        addr::MIDI_IN_PORTS => Some(E::Midi(MidiInfo {
+            kind: MidiType::In,
+            port_info: arg_str(m, 0).unwrap_or_default(),
+        })),
+        addr::MIDI_OUT_PORTS => Some(E::Midi(MidiInfo {
+            kind: MidiType::Out,
+            port_info: arg_str(m, 0).unwrap_or_default(),
+        })),
+        addr::GAMEPAD_DEVICES_LIST => {
+            Some(E::GamepadDevices(arg_str(m, 0).unwrap_or_default()))
+        }
+        addr::SUPERSONIC_DEVICES => Some(E::AudioDevices(parse_audio_devices(m))),
+        addr::SUPERSONIC_INPUT_DEVICES => {
+            Some(E::AudioInputDevices(parse_audio_input_devices(m)))
+        }
+        addr::SUPERSONIC_INFO => Some(E::Scsynth(ScsynthInfo {
+            text: arg_str(m, 0).unwrap_or_default(),
+            sample_rate: arg_i32(m, 1),
+            buffer_size: arg_i32(m, 2),
+        })),
+        // Recognised families we haven't fully modelled yet (setup,
+        // statechange, info text, buffer/* …).
+        a if a.starts_with("/supersonic/")
+            || a.starts_with("/buffer/")
+            || a == addr::UPDATE_INFO_TEXT =>
+        {
+            Some(E::Unhandled { addr: a.to_string() })
+        }
+        _ => None,
+    }
+}
+
+/// `/supersonic/devices`: mode(s), current(s), name(s)…, sampleRate(i),
+/// rate-compat(i)…, driver-type(s)… — device names run until the first int
+/// arg (mirrors the C++ `ArgReader` loop in `osc_handler.cpp`).
+fn parse_audio_devices(m: &OscMessage) -> AudioDevicesInfo {
+    let mut info = AudioDevicesInfo {
+        mode: arg_str(m, 0).unwrap_or_default(),
+        current_device: arg_str(m, 1).unwrap_or_default(),
+        ..Default::default()
+    };
+    let mut i = 2;
+    while let Some(name) = arg_str(m, i) {
+        info.devices.push(name);
+        i += 1;
+    }
+    info.sample_rate = arg_i32(m, i).unwrap_or(0);
+    info
+}
+
+/// `/supersonic/input-devices`: current(s), numDevices(i), name(s)…, type(s)…
+fn parse_audio_input_devices(m: &OscMessage) -> AudioInputDevicesInfo {
+    let mut info = AudioInputDevicesInfo {
+        current_device: arg_str(m, 0).unwrap_or_default(),
+        ..Default::default()
+    };
+    let n = arg_i32(m, 1).unwrap_or(0).max(0) as usize;
+    for i in 0..n {
+        if let Some(name) = arg_str(m, 2 + i) {
+            info.devices.push(name);
+        }
+    }
+    info
+}
+
+fn parse_error(m: &OscMessage, kind: MessageType) -> MessageInfo {
+    // /error and /syntax_error: [job_id, message, backtrace, line]
+    MessageInfo {
+        job_id: arg_i32(m, 0).unwrap_or(0),
+        backtrace: arg_str(m, 2).unwrap_or_default(),
+        line: arg_i32(m, 3).unwrap_or(0),
+        ..MessageInfo::simple(kind, arg_str(m, 1).unwrap_or_default())
+    }
+}
+
+/// /log/multi_message: [job_id, thread_name, runtime, count, (style, text)*].
+fn parse_multi(m: &OscMessage) -> MessageInfo {
+    let mut info = MessageInfo::simple(MessageType::Multi, String::new());
+    info.job_id = arg_i32(m, 0).unwrap_or(0);
+    info.thread_name = arg_str(m, 1).unwrap_or_default();
+    info.runtime = arg_str(m, 2).unwrap_or_default();
+    let count = arg_i32(m, 3).unwrap_or(0).max(0) as usize;
+    for k in 0..count {
+        let base = 4 + k * 2;
+        info.multi.push(MessageData {
+            style: arg_i32(m, base).unwrap_or(0),
+            text: arg_str(m, base + 1).unwrap_or_default(),
+        });
+    }
+    info
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rosc::{OscPacket, OscType};
+
+    #[test]
+    fn run_buffer_roundtrips_through_the_wire() {
+        let m = out::run_buffer(42, "buffer0", "play 60");
+        let bytes = rosc::encoder::encode(&OscPacket::Message(m.clone())).unwrap();
+        let (_, packet) = rosc::decoder::decode_udp(&bytes).unwrap();
+        let OscPacket::Message(back) = packet else { panic!("not a message") };
+        assert_eq!(back.addr, addr::SAVE_AND_RUN_BUFFER);
+        assert_eq!(back.args.len(), 4);
+        assert!(matches!(back.args[0], OscType::Int(42)));
+        assert!(matches!(&back.args[1], OscType::String(s) if s == "buffer0"));
+        assert!(matches!(&back.args[2], OscType::String(s) if s == "play 60"));
+    }
+
+    #[test]
+    fn parses_ack_status() {
+        let m = OscMessage {
+            addr: addr::ACK.into(),
+            args: vec![OscType::String("run-7".into())],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::Status(s)) => {
+                assert_eq!(s.kind, StatusType::Ack);
+                assert_eq!(s.id, "run-7");
+            }
+            other => panic!("expected Ack status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multi_message_lines() {
+        let m = OscMessage {
+            addr: addr::LOG_MULTI_MESSAGE.into(),
+            args: vec![
+                OscType::Int(3),                       // job_id
+                OscType::String(":live_loop".into()),  // thread
+                OscType::String("0.5".into()),         // runtime
+                OscType::Int(2),                        // count
+                OscType::Int(0),
+                OscType::String("synth :beep".into()),
+                OscType::Int(1),
+                OscType::String("sample :bd_haus".into()),
+            ],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::Report(info)) => {
+                assert_eq!(info.kind, MessageType::Multi);
+                assert_eq!(info.job_id, 3);
+                assert_eq!(info.multi.len(), 2);
+                assert_eq!(info.multi[1].text, "sample :bd_haus");
+                assert_eq!(info.multi[1].style, 1);
+            }
+            other => panic!("expected multi Report, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_supersonic_devices_names_until_first_int() {
+        let m = OscMessage {
+            addr: addr::SUPERSONIC_DEVICES.into(),
+            args: vec![
+                OscType::String("auto".into()),
+                OscType::String("Built-in Audio".into()),
+                OscType::String("Built-in Audio".into()),
+                OscType::String("HDMI Out".into()),
+                OscType::Int(48000),
+                OscType::Int(1),
+                OscType::Int(1),
+                OscType::String("alsa".into()),
+                OscType::String("alsa".into()),
+            ],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::AudioDevices(d)) => {
+                assert_eq!(d.mode, "auto");
+                assert_eq!(d.current_device, "Built-in Audio");
+                assert_eq!(d.devices, vec!["Built-in Audio", "HDMI Out"]);
+                assert_eq!(d.sample_rate, 48000);
+            }
+            other => panic!("expected AudioDevices, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_supersonic_input_devices() {
+        let m = OscMessage {
+            addr: addr::SUPERSONIC_INPUT_DEVICES.into(),
+            args: vec![
+                OscType::String("Mic".into()),
+                OscType::Int(2),
+                OscType::String("Mic".into()),
+                OscType::String("Line In".into()),
+                OscType::String("alsa".into()),
+                OscType::String("alsa".into()),
+            ],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::AudioInputDevices(d)) => {
+                assert_eq!(d.current_device, "Mic");
+                assert_eq!(d.devices, vec!["Mic", "Line In"]);
+            }
+            other => panic!("expected AudioInputDevices, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_supersonic_info_simple_and_extended() {
+        let simple = OscMessage {
+            addr: addr::SUPERSONIC_INFO.into(),
+            args: vec![OscType::String("SuperSonic booted".into())],
+        };
+        match parse_incoming(&simple) {
+            Some(ClientEvent::Scsynth(i)) => {
+                assert_eq!(i.text, "SuperSonic booted");
+                assert_eq!(i.sample_rate, None);
+            }
+            other => panic!("expected Scsynth, got {other:?}"),
+        }
+        let extended = OscMessage {
+            addr: addr::SUPERSONIC_INFO.into(),
+            args: vec![
+                OscType::String("running".into()),
+                OscType::Int(48000),
+                OscType::Int(1024),
+            ],
+        };
+        match parse_incoming(&extended) {
+            Some(ClientEvent::Scsynth(i)) => {
+                assert_eq!(i.sample_rate, Some(48000));
+                assert_eq!(i.buffer_size, Some(1024));
+            }
+            other => panic!("expected Scsynth, got {other:?}"),
+        }
+    }
+}

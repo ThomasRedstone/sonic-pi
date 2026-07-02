@@ -1,0 +1,16 @@
+[package]
+name = "sonicpi-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase 2 scaffold: a Rust reimplementation of the C++ app/api layer, behind the same OSC + IAPIClient contract."
+
+[dependencies]
+rosc = "0.11"
+thiserror = "1"
+libc = "0.2"   # POSIX shm_open/mmap for the scope shared-memory reader
+
+# Runnable demonstration of the contract without a full Sonic Pi runtime:
+#   cargo run --example contract_demo
+[[example]]
+name = "contract_demo"
