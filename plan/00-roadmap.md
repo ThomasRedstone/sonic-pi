@@ -1,4 +1,4 @@
-# Streamlined Sonic — Roadmap
+# Sonic Oxide — Roadmap
 
 > Status: exploratory / pre-decision. Captures the direction agreed so far.
 > Baseline reviewed: Sonic Pi `5.0.0-beta4` (this repo, `dev` branch).

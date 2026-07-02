@@ -1,6 +1,6 @@
 //! Buffer persistence — workspace files on disk, Sonic Pi style.
 //!
-//! Lives under `~/.sonic-pi/store/streamlined/buffer_<n>.spi` (its own subdir
+//! Lives under `~/.sonic-pi/store/sonic-oxide/buffer_<n>.spi` (its own subdir
 //! so it can never clobber the Qt app's `workspace_*` files, while sharing
 //! the familiar `~/.sonic-pi` home). Load returns `None` per missing file so
 //! callers can fall back to seed content.
@@ -9,7 +9,15 @@ use std::path::{Path, PathBuf};
 
 pub fn default_store_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    home.join(".sonic-pi/store/streamlined")
+    let dir = home.join(".sonic-pi/store/sonic-oxide");
+    // One-time migration from the pre-naming "streamlined" dir.
+    let old = home.join(".sonic-pi/store/streamlined");
+    if !dir.exists() && old.exists() {
+        if std::fs::rename(&old, &dir).is_err() {
+            return old; // migration failed — keep using the old home
+        }
+    }
+    dir
 }
 
 fn buffer_path(dir: &Path, index: usize) -> PathBuf {

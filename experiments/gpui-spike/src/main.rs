@@ -1,4 +1,4 @@
-//! Streamlined Sonic — GPUI frontend (Phase 3a build-out).
+//! Sonic Oxide — GPUI frontend (Phase 3a build-out).
 //!
 //! What this now does (see ../../plan/02-implementation-plan.md):
 //!   * Multi-buffer editor (3 buffers, tab row) + Cues + Log + Scope panes.
@@ -596,9 +596,9 @@ impl Backend {
         if let Backend::Real { session, daemon, .. } = self {
             let _ = session.shutdown();
             if daemon.wait_timeout(Duration::from_secs(3)) {
-                eprintln!("sonic-gpui-spike: daemon exited cleanly");
+                eprintln!("sonic-oxide: daemon exited cleanly");
             } else {
-                eprintln!("sonic-gpui-spike: daemon didn't exit in 3s; killing");
+                eprintln!("sonic-oxide: daemon didn't exit in 3s; killing");
                 daemon.kill();
             }
         }
@@ -1351,7 +1351,7 @@ impl SonicSpike {
             .p_2()
             .gap_2()
             .bg(cx.theme().title_bar)
-            .child(div().flex_1().child("Streamlined Sonic — GPUI"))
+            .child(div().flex_1().child("Sonic Oxide"))
             .child(
                 div()
                     .text_xs()
@@ -1973,6 +1973,10 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Sonic Oxide".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             |window, cx| {

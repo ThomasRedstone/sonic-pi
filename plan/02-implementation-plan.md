@@ -1,4 +1,4 @@
-# Streamlined Sonic — implementation plan
+# Sonic Oxide — implementation plan
 
 > Detailed, phased plan for the rebuild. Read [`00-roadmap.md`](./00-roadmap.md)
 > first for the vision and architecture; [`01-spike-results.md`](./01-spike-results.md)
