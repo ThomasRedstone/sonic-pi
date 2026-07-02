@@ -259,16 +259,26 @@ forces it) → loopback. Sonic Oxide now runs 3 processes by default.
 - **i18n**: all 11 screen-reader control labels translate (de locale
   complete for controls + titles).
 
+## ✅ MILESTONE: self-contained bundle (2026-07-02)
+
+Packaging v2 complete — the bundle carries its OWN Ruby (interpreter +
+stdlib + gems + libruby behind a path-pinning wrapper, official
+server/native/ruby layout, preferred by paths.rs). No system-ruby
+dependency. Smoke tests assert the FULL runtime (spider alive at quit)
+and caught three real bundle bugs (etc/buffers, etc/synthdefs, VERSION
+file × 2 layouts). Bundle 220MB + AppDir both PASS from relocated dirs.
+Debugging aid: SONIC_OXIDE_DEBUG_CHILDREN=1 inherits child stdio.
+
 ## Next priorities (the remaining tail)
 
 1. **DockArea drag-to-rearrange** — the last dock piece; a real refactor
    (panes become Panel entities).
-2. **Bundle ruby** in packaging (drop the system-ruby dependency) — the
-   release blocker for machines without ruby 3.x.
-3. **i18n**: remaining strings (button captions, log prefixes, Help/
+2. **i18n**: remaining strings (button captions, log prefixes, Help/
    Settings body text), then .po migration.
-4. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
+3. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
    editor a11y glyph metrics.
+4. **Packaging v3**: AppImage on a machine with appimagetool; mac/windows
+   scripts; CI artifact upload.
 5. **Qt retirement** per roadmap exit criteria — after sustained
    side-by-side parity use (weeks, not hours).
 
