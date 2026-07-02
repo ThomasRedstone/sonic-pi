@@ -39,6 +39,15 @@ pub struct VocabEntry {
     pub kind: VocabKind,
     /// One-line summary shown alongside the item.
     pub doc: String,
+    /// Option lines for synths/fx (`amp: 1`, `cutoff: 100`, …) — feeds the
+    /// Help pane; empty for samples and functions.
+    pub opts: Vec<String>,
+}
+
+impl VocabEntry {
+    pub fn new(label: impl Into<String>, kind: VocabKind, doc: impl Into<String>) -> VocabEntry {
+        VocabEntry { label: label.into(), kind, doc: doc.into(), opts: Vec::new() }
+    }
 }
 
 pub struct Vocab {
@@ -51,37 +60,55 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
     let mut entries = Vec::new();
     let mut key: Option<String> = None;
     let mut doc = String::new();
-    let mut in_doc = false;
+    let mut opts: Vec<String> = Vec::new();
+    #[derive(PartialEq)]
+    enum Section {
+        None,
+        Doc,
+        Opts,
+    }
+    let mut section = Section::None;
 
-    let flush = |key: &mut Option<String>, doc: &mut String, out: &mut Vec<VocabEntry>| {
+    let flush = |key: &mut Option<String>,
+                 doc: &mut String,
+                 opts: &mut Vec<String>,
+                 out: &mut Vec<VocabEntry>| {
         if let Some(k) = key.take() {
-            out.push(VocabEntry { label: k, kind, doc: std::mem::take(doc).trim().to_string() });
+            out.push(VocabEntry {
+                label: k,
+                kind,
+                doc: std::mem::take(doc).trim().to_string(),
+                opts: std::mem::take(opts),
+            });
         } else {
             doc.clear();
+            opts.clear();
         }
     };
 
     for line in md.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("## ") {
-            flush(&mut key, &mut doc, &mut entries);
-            in_doc = false;
-        } else if trimmed == "### Key:" {
-            in_doc = false;
+            flush(&mut key, &mut doc, &mut opts, &mut entries);
+            section = Section::None;
         } else if trimmed == "### Doc:" {
-            in_doc = true;
+            section = Section::Doc;
+        } else if trimmed == "### Opts:" {
+            section = Section::Opts;
         } else if trimmed.starts_with("### ") {
-            in_doc = false;
+            section = Section::None;
         } else if trimmed.starts_with(':') && key.is_none() {
             key = Some(trimmed.to_string());
-        } else if in_doc && !trimmed.is_empty() {
+        } else if section == Section::Doc && !trimmed.is_empty() {
             if !doc.is_empty() {
                 doc.push(' ');
             }
             doc.push_str(trimmed);
+        } else if section == Section::Opts && !trimmed.is_empty() {
+            opts.push(trimmed.trim_start_matches('*').trim().to_string());
         }
     }
-    flush(&mut key, &mut doc, &mut entries);
+    flush(&mut key, &mut doc, &mut opts, &mut entries);
     entries
 }
 
@@ -104,19 +131,19 @@ pub fn parse_lang_docs(rb: &str) -> Vec<VocabEntry> {
             if !name.is_empty() {
                 // Flush a previous block that never found its summary.
                 if let Some(prev) = pending.take() {
-                    entries.push(VocabEntry { label: prev, kind: VocabKind::Func, doc: String::new() });
+                    entries.push(VocabEntry::new(prev, VocabKind::Func, ""));
                 }
                 pending = Some(name);
             }
         } else if let Some(rest) = trimmed.strip_prefix("summary:") {
             if let Some(name) = pending.take() {
                 let doc = rest.trim().trim_matches('"').trim_end_matches("\",").to_string();
-                entries.push(VocabEntry { label: name, kind: VocabKind::Func, doc });
+                entries.push(VocabEntry::new(name, VocabKind::Func, doc));
             }
         }
     }
     if let Some(name) = pending.take() {
-        entries.push(VocabEntry { label: name, kind: VocabKind::Func, doc: String::new() });
+        entries.push(VocabEntry::new(name, VocabKind::Func, ""));
     }
     entries
 }
@@ -132,11 +159,7 @@ pub fn samples_from_dir(dir: &Path) -> Vec<VocabEntry> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if matches!(ext, "flac" | "wav" | "wave" | "aif" | "aiff") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                out.push(VocabEntry {
-                    label: format!(":{stem}"),
-                    kind: VocabKind::Sample,
-                    doc: String::new(),
-                });
+                out.push(VocabEntry::new(format!(":{stem}"), VocabKind::Sample, ""));
             }
         }
     }
@@ -208,6 +231,26 @@ impl Vocab {
     }
 }
 
+impl Vocab {
+    /// Case-insensitive substring search for the Help pane.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<&VocabEntry> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<&VocabEntry> =
+            self.entries.iter().filter(|e| e.label.to_lowercase().contains(&q)).collect();
+        // Earlier match position first, then shorter label.
+        out.sort_by_key(|e| (e.label.to_lowercase().find(&q).unwrap_or(usize::MAX), e.label.len()));
+        out.truncate(limit);
+        out
+    }
+
+    pub fn get(&self, label: &str) -> Option<&VocabEntry> {
+        self.entries.iter().find(|e| e.label == label)
+    }
+}
+
 /// The word being typed at `offset` (byte) — identifier chars plus a leading
 /// `:` for symbols. Returns (start_byte, word).
 pub fn word_prefix_at(text: &str, offset: usize) -> (usize, &str) {
@@ -250,8 +293,10 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, ":dull_bell");
         assert_eq!(entries[0].doc, "A simple dull discordant bell sound.");
+        assert_eq!(entries[0].opts, vec!["amp: 1"]);
         assert_eq!(entries[1].label, ":tb303");
         assert_eq!(entries[1].doc, "Emulation of the classic acid bass machine.");
+        assert!(entries[1].opts.is_empty());
     }
 
     #[test]
@@ -275,10 +320,10 @@ mod tests {
     fn completes_symbols_and_functions() {
         let vocab = Vocab {
             entries: vec![
-                VocabEntry { label: ":tb303".into(), kind: VocabKind::Synth, doc: String::new() },
-                VocabEntry { label: ":bd_haus".into(), kind: VocabKind::Sample, doc: String::new() },
-                VocabEntry { label: "play".into(), kind: VocabKind::Func, doc: String::new() },
-                VocabEntry { label: "play_chord".into(), kind: VocabKind::Func, doc: String::new() },
+                VocabEntry::new(":tb303", VocabKind::Synth, ""),
+                VocabEntry::new(":bd_haus", VocabKind::Sample, ""),
+                VocabEntry::new("play", VocabKind::Func, ""),
+                VocabEntry::new("play_chord", VocabKind::Func, ""),
             ],
         };
         // Symbol prefix restricts to symbols.
@@ -305,6 +350,24 @@ mod tests {
         assert!(vocab.entries.len() > 300, "suspiciously small vocab: {}", vocab.entries.len());
         // fx cheatsheet keys are :fx_* — completion after with_fx types ':'
         assert!(labels.iter().any(|l| l.starts_with(":fx_") || l.starts_with(":reverb")), "fx missing");
+    }
+
+    #[test]
+    fn search_is_substring_and_ranked() {
+        let vocab = Vocab {
+            entries: vec![
+                VocabEntry::new(":bd_haus", VocabKind::Sample, ""),
+                VocabEntry::new("play", VocabKind::Func, ""),
+                VocabEntry::new("play_pattern_timed", VocabKind::Func, ""),
+            ],
+        };
+        let hits: Vec<_> = vocab.search("haus", 10).iter().map(|e| e.label.clone()).collect();
+        assert_eq!(hits, vec![":bd_haus"]);
+        // Prefix matches rank before mid-string; shorter first on ties.
+        let hits: Vec<_> = vocab.search("play", 10).iter().map(|e| e.label.clone()).collect();
+        assert_eq!(hits, vec!["play", "play_pattern_timed"]);
+        assert!(vocab.search("", 10).is_empty());
+        assert_eq!(vocab.get("play").unwrap().label, "play");
     }
 
     #[test]

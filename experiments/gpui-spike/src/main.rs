@@ -1007,6 +1007,11 @@ struct SonicSpike {
     settings_open: bool,
     /// Previous tap-tempo press, for the interval → BPM conversion.
     last_tap: Option<std::time::Instant>,
+    /// Help pane: the loaded vocabulary doubles as the docs index.
+    vocab: Rc<Vocab>,
+    help_open: bool,
+    help_query: Entity<InputState>,
+    help_selected: Option<String>,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -1050,6 +1055,8 @@ impl SonicSpike {
         let cues = cx.new(|cx| {
             InputState::new(window, cx).multi_line(true).default_value(CUES_EXAMPLE)
         });
+        let help_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search synths, samples, fns…"));
 
         let incoming: Arc<Mutex<Vec<ClientEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let (backend, status) = Backend::connect(incoming.clone());
@@ -1170,6 +1177,10 @@ impl SonicSpike {
             in_devices: None,
             settings_open: false,
             last_tap: None,
+            vocab,
+            help_open: false,
+            help_query,
+            help_selected: None,
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -1407,6 +1418,74 @@ impl SonicSpike {
                     cx.notify();
                 })),
             )
+            .child(Button::new("help-toggle").label("?").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.help_open = !this.help_open;
+                    cx.notify();
+                },
+            )))
+    }
+
+    /// Help pane: search the vocabulary, click an entry, read its docs
+    /// (summary + synth/fx opts) — the cheatsheets and lang doc blocks are
+    /// the same sources the full Qt help renders.
+    fn help(&self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.help_query.read(cx).value().to_string();
+        let hits: Vec<(String, &'static str)> = self
+            .vocab
+            .search(&query, 10)
+            .into_iter()
+            .map(|e| (e.label.clone(), e.kind.label()))
+            .collect();
+
+        let mut pane = v_flex()
+            .gap_1()
+            .p_2()
+            .text_sm()
+            .child(Input::new(&self.help_query).small());
+
+        if !hits.is_empty() {
+            let mut row = h_flex().gap_1().flex_wrap();
+            for (i, (label, kind)) in hits.iter().enumerate() {
+                let selected = self.help_selected.as_deref() == Some(label.as_str());
+                let btn = Button::new(("help-hit", i))
+                    .xsmall()
+                    .label(format!("{label} ({kind})"));
+                let btn = if selected { btn.primary() } else { btn.outline() };
+                let label = label.clone();
+                row = row.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                    this.help_selected = Some(label.clone());
+                    cx.notify();
+                })));
+            }
+            pane = pane.child(row);
+        } else if !query.trim().is_empty() {
+            pane = pane.child(div().text_xs().child("No matches."));
+        }
+
+        if let Some(entry) = self.help_selected.as_deref().and_then(|l| self.vocab.get(l)) {
+            let mut body = v_flex().gap_1().child(
+                div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
+                    "{} — {}",
+                    entry.label,
+                    entry.kind.label()
+                )),
+            );
+            if !entry.doc.is_empty() {
+                body = body.child(div().text_sm().child(entry.doc.clone()));
+            }
+            if !entry.opts.is_empty() {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(entry.opts.join("   ")),
+                );
+            }
+            pane = pane.child(body);
+        }
+
+        pane.into_any_element()
     }
 
     /// Nudge the Link tempo by `delta` BPM (metrics give the current value).
@@ -1743,7 +1822,19 @@ impl Render for SonicSpike {
             ));
 
         let settings_el = self.settings_open.then(|| self.settings(cx));
+        let help_el = self.help_open.then(|| self.help(cx));
         let mut right = v_flex().size_full().gap_2().p_2();
+        if let Some(el) = help_el {
+            right = right.child(self.pane(
+                "help",
+                "Help",
+                Role::Group,
+                "Documentation search",
+                0.0,
+                el,
+                cx,
+            ));
+        }
         if let Some(el) = settings_el {
             right = right.child(self.pane(
                 "settings",
