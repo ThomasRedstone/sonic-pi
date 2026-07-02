@@ -1,0 +1,50 @@
+# Sonic Oxide (experiments/) — Rust core + GPUI frontend test suites.
+# Kept separate from the existing build.yml so the upstream Qt pipeline is
+# untouched. No untrusted event data is interpolated into run commands.
+name: Sonic Oxide
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "experiments/**"
+      - ".github/workflows/sonic-oxide.yml"
+  pull_request:
+    paths:
+      - "experiments/**"
+      - ".github/workflows/sonic-oxide.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-core:
+    name: rust-core (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/rust-core
+      - name: Unit + integration + golden tests
+        working-directory: experiments/rust-core
+        run: cargo test --all-targets
+
+  gpui-spike:
+    name: gpui-spike (nightly, per rust-toolchain.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml in the crate dir selects the nightly channel.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/gpui-spike
+      - name: GPUI Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libvulkan-dev libasound2-dev
+      - name: Tests (headless — pure helpers, vocab, a11y geometry, store)
+        working-directory: experiments/gpui-spike
+        run: cargo test
