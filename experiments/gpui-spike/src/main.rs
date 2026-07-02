@@ -14,11 +14,15 @@
 //! additionally goes through `EditorA11y`, a custom element that writes the
 //! buffer text into the AccessKit node *value* — the first Tier-2 increment.
 
+mod vocab;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+
+use vocab::{word_prefix_at, Vocab, VocabKind};
 
 use gpui::*;
 use gpui_component::{
@@ -329,6 +333,58 @@ mod tests {
         assert_eq!(byte_to_text_position(text, 999), (1, 7));
         // multibyte: caret after "é" in "hé" counts characters, not bytes
         assert_eq!(byte_to_text_position("hé\nx", 3), (0, 2));
+    }
+}
+
+// ── Autocomplete: Sonic Pi vocabulary → the editor's completion menu ─────────
+
+/// `CompletionProvider` over the repo-loaded [`Vocab`]: synths, fx, samples
+/// (symbols) and lang functions, prefix-matched against the word at the caret.
+struct SonicCompletions(Rc<Vocab>);
+
+impl gpui_component::input::CompletionProvider for SonicCompletions {
+    fn completions(
+        &self,
+        text: &gpui_component::input::Rope,
+        offset: usize,
+        _trigger: lsp_types::CompletionContext,
+        _window: &mut Window,
+        _cx: &mut Context<InputState>,
+    ) -> Task<gpui::Result<lsp_types::CompletionResponse>> {
+        let text = text.to_string();
+        let (_, prefix) = word_prefix_at(&text, offset);
+        let items: Vec<lsp_types::CompletionItem> = self
+            .0
+            .complete(prefix, 50)
+            .into_iter()
+            .map(|e| lsp_types::CompletionItem {
+                label: e.label.clone(),
+                detail: Some(e.kind.label().to_string()),
+                documentation: (!e.doc.is_empty())
+                    .then(|| lsp_types::Documentation::String(e.doc.clone())),
+                insert_text: Some(e.label.clone()),
+                kind: Some(match e.kind {
+                    VocabKind::Func => lsp_types::CompletionItemKind::FUNCTION,
+                    VocabKind::Sample => lsp_types::CompletionItemKind::FILE,
+                    _ => lsp_types::CompletionItemKind::VALUE,
+                }),
+                ..Default::default()
+            })
+            .collect();
+        Task::ready(Ok(lsp_types::CompletionResponse::Array(items)))
+    }
+
+    fn is_completion_trigger(
+        &self,
+        _offset: usize,
+        new_text: &str,
+        _cx: &mut Context<InputState>,
+    ) -> bool {
+        new_text
+            .chars()
+            .last()
+            .map(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+            .unwrap_or(false)
     }
 }
 
@@ -920,15 +976,24 @@ struct SonicSpike {
 
 impl SonicSpike {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Completion vocabulary from the repo's own doc sources (one load,
+        // shared by every buffer).
+        let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let vocab = Rc::new(Vocab::load(&app_root));
+
         let buffers: Vec<Entity<InputState>> = BUFFER_SEEDS
             .iter()
             .map(|seed| {
+                let vocab = vocab.clone();
                 cx.new(|cx| {
-                    InputState::new(window, cx)
+                    let mut state = InputState::new(window, cx)
                         .code_editor("ruby")
                         .line_number(true)
                         .soft_wrap(false)
-                        .default_value(*seed)
+                        .default_value(*seed);
+                    state.lsp.completion_provider =
+                        Some(Rc::new(SonicCompletions(vocab.clone())));
+                    state
                 })
             })
             .collect();
