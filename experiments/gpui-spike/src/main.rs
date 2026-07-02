@@ -176,6 +176,24 @@ fn osc(addr: &str, args: Vec<OscType>) -> OscMessage {
     OscMessage { addr: addr.to_string(), args }
 }
 
+/// Locate the Sonic Pi `app/` runtime at RUNTIME (a bundle relocates):
+/// `SONIC_OXIDE_APP_ROOT` env, else `../app` next to the executable (the
+/// packaged layout), else the dev-checkout fallback baked at compile time.
+fn app_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("SONIC_OXIDE_APP_ROOT") {
+        return PathBuf::from(root);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let bundled = dir.join("../app");
+            if bundled.join("server").exists() {
+                return bundled;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app")
+}
+
 /// Parse Spider's rational cue timestamp (`"num/den"`, in seconds) to f64.
 fn parse_cue_time(t: &str) -> Option<f64> {
     let (n, d) = t.split_once('/')?;
@@ -506,7 +524,7 @@ impl Backend {
     }
 
     fn try_supervisor(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let root = app_root();
         let sup = Supervisor::boot(&root).map_err(|e| e.to_string())?;
         let session =
             Session::connect(&sup.ports, Arc::new(LogSink(sink))).map_err(|e| e.to_string())?;
@@ -515,7 +533,7 @@ impl Backend {
     }
 
     fn try_real(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let root = app_root();
         let paths = resolve(&root);
         let ruby = paths[&SonicPiPath::Ruby].clone();
         let script = paths[&SonicPiPath::BootDaemon].clone();
@@ -1137,7 +1155,7 @@ impl SonicSpike {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Completion vocabulary from the repo's own doc sources (one load,
         // shared by every buffer).
-        let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let app_root = app_root();
         let vocab = Rc::new(Vocab::load(&app_root));
 
         // Ten buffers: stored content wins, then seed, then empty.
@@ -1675,6 +1693,16 @@ impl SonicSpike {
             );
             if !entry.doc.is_empty() {
                 body = body.child(div().text_sm().child(entry.doc.clone()));
+            }
+            if !entry.long_doc.is_empty() {
+                // Full lang doc body (bounded — some run to pages).
+                let mut text: String = entry.long_doc.chars().take(1200).collect();
+                if text.len() < entry.long_doc.len() {
+                    text.push('…');
+                }
+                body = body.child(
+                    div().text_xs().text_color(cx.theme().muted_foreground).child(text),
+                );
             }
             if !entry.opts.is_empty() {
                 body = body.child(

@@ -175,3 +175,4 @@ install/windows/vcredist_*.exe
 # prefix so we control the macOS deployment target. Build output and
 # source tarball cache live here; not tracked.
 app/external/openssl-build/
+/experiments/dist/

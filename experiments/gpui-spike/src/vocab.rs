@@ -42,11 +42,20 @@ pub struct VocabEntry {
     /// Option lines for synths/fx (`amp: 1`, `cutoff: 100`, …) — feeds the
     /// Help pane; empty for samples and functions.
     pub opts: Vec<String>,
+    /// Full documentation body (the lang `doc:` field) — Help-pane only;
+    /// empty when the source has no long doc.
+    pub long_doc: String,
 }
 
 impl VocabEntry {
     pub fn new(label: impl Into<String>, kind: VocabKind, doc: impl Into<String>) -> VocabEntry {
-        VocabEntry { label: label.into(), kind, doc: doc.into(), opts: Vec::new() }
+        VocabEntry {
+            label: label.into(),
+            kind,
+            doc: doc.into(),
+            opts: Vec::new(),
+            long_doc: String::new(),
+        }
     }
 }
 
@@ -79,6 +88,7 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
                 kind,
                 doc: std::mem::take(doc).trim().to_string(),
                 opts: std::mem::take(opts),
+                long_doc: String::new(),
             });
         } else {
             doc.clear();
@@ -112,13 +122,46 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
     entries
 }
 
-/// Extract `doc name: :fn` + `summary: "…"` pairs from a Sonic Pi lang
-/// source file (core.rb / sound.rb / midi.rb / …).
+/// Extract `doc name: :fn` + `summary: "…"` + multiline `doc: "…"` blocks
+/// from a Sonic Pi lang source file (core.rb / sound.rb / midi.rb / …).
 pub fn parse_lang_docs(rb: &str) -> Vec<VocabEntry> {
-    let mut entries = Vec::new();
+    let mut entries: Vec<VocabEntry> = Vec::new();
     let mut pending: Option<String> = None;
+    // (entry index, accumulated text) while inside a multiline doc: string.
+    let mut capturing: Option<(usize, String)> = None;
+
+    // True when a double-quoted Ruby string closes on this fragment.
+    fn closes(fragment: &str) -> Option<usize> {
+        let bytes = fragment.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 1, // skip the escaped char
+                b'"' => return Some(i),
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
 
     for line in rb.lines() {
+        if let Some((ix, mut text)) = capturing.take() {
+            match closes(line) {
+                Some(end) => {
+                    text.push('\n');
+                    text.push_str(&line[..end]);
+                    entries[ix].long_doc = text.replace("\\\"", "\"").trim().to_string();
+                }
+                None => {
+                    text.push('\n');
+                    text.push_str(line);
+                    capturing = Some((ix, text));
+                }
+            }
+            continue;
+        }
+
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("doc name:") {
             let name: String = rest
@@ -139,6 +182,18 @@ pub fn parse_lang_docs(rb: &str) -> Vec<VocabEntry> {
             if let Some(name) = pending.take() {
                 let doc = rest.trim().trim_matches('"').trim_end_matches("\",").to_string();
                 entries.push(VocabEntry::new(name, VocabKind::Func, doc));
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("doc:") {
+            // Attach the long doc to the most recent entry.
+            let Some(ix) = entries.len().checked_sub(1) else { continue };
+            let Some(start) = rest.find('"') else { continue };
+            let body = &rest[start + 1..];
+            match closes(body) {
+                Some(end) => {
+                    entries[ix].long_doc =
+                        body[..end].replace("\\\"", "\"").trim().to_string();
+                }
+                None => capturing = Some((ix, body.to_string())),
             }
         }
     }
@@ -344,15 +399,24 @@ mod tests {
        doc name:          :play,
            introduced:    Version.new(2,0,0),
            summary:       "Play current synth",
-           doc:           "long text"
+           doc:           "long text
+spanning multiple lines with a \"quoted\" bit
+and more.",
+           examples:      ["play 60"]
        doc name:          :live_loop,
            summary:       "A loop for live coding",
+           doc:           "one liner",
 "#;
         let entries = parse_lang_docs(rb);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "play");
         assert_eq!(entries[0].doc, "Play current synth");
+        assert_eq!(
+            entries[0].long_doc,
+            "long text\nspanning multiple lines with a \"quoted\" bit\nand more."
+        );
         assert_eq!(entries[1].label, "live_loop");
+        assert_eq!(entries[1].long_doc, "one liner");
     }
 
     #[test]
