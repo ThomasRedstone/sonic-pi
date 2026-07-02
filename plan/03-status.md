@@ -174,15 +174,28 @@ Two follow-ups discovered:
   `python3 /usr/bin/orca`, so `pkill -f "^orca"` misses).
 - 24 core + 18 spike tests green.
 
+## ✅ MILESTONE: Phase-4 Rust supervisor WORKS (2026-07-02)
+
+`sonicpi-core::supervisor` boots Spider + SuperSonic directly — no
+daemon.rb, 4 processes → 3. Port allocation via OS (pairs collapsed as the
+daemon's table does), SuperSonic readiness = its shm segment appearing,
+Spider spawned with SpiderBooter's exact argv (`spider-server.rb`, NOT
+sonic-pi-server.rb). Crash-safety: PR_SET_PDEATHSIG(SIGTERM) on children —
+kernel reaps them if the app dies, no 40s+ kill-switch window.
+E2E `supervisor_check`: 73 events over a real Session, teardown to zero —
+PASS. Spike opts in with `SONIC_OXIDE_SUPERVISOR=1`; daemon.rb remains the
+default + A/B oracle. NOT yet ported: TOML audio opts, device switching
+(needs an engine-restart path), the osc-cues external listener (daemon.rb
+binds 4560; supervisor allocates dynamically — external OSC/MIDI cue
+senders expect 4560). One unexplained orphaned-children incident during
+bring-up → `shutdown_verified()` + WARNING log; watch for recurrence.
+
 ## Next priorities
 
-1. **Dock system**: gpui-component `DockArea` instead of fixed splits
-   (drag/collapse/resize panes — the Qt parity item with the most daily
-   feel impact).
-2. **Phase 4 start — RustDaemon**: fold daemon.rb's supervision into
-   `sonicpi-core::process` (port allocation, spawn Spider + SuperSonic
-   directly, keep-alive kill-switch) → 4→3 processes. Validate by running
-   the spike against it with the daemon.rb path as A/B fallback.
+1. **Supervisor gaps**: fixed osc-cues port 4560 (external cue senders),
+   TOML audio-settings opts, device switching via engine restart. Then flip
+   the spike's default to supervisor mode.
+2. **Dock system**: gpui-component `DockArea` instead of fixed splits.
 3. **3c**: piano/slider completion-popup helpers; Help pane → full lang
    `doc:` bodies (only summaries today).
 4. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
