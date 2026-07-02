@@ -105,6 +105,12 @@ pub mod out {
         msg(addr::SET_GLOBAL_TIMEWARP, vec![OscType::Int(token), OscType::Double(time)])
     }
 
+    /// `/clock/tempo/set [bpm]` — straight to SuperSonic (mirrors
+    /// `link_api.rb`'s `@link_comms.send("/clock/tempo/set", bpm.to_f)`).
+    pub fn clock_tempo_set(bpm: f32) -> OscMessage {
+        msg(addr::CLOCK_TEMPO_SET, vec![OscType::Float(bpm)])
+    }
+
     /// `/daemon/audio/switch-device [token] [output] [sampleRate] [bufferSize]
     /// [input]` — sent to the daemon (mirrors `MainWindow::sendDeviceSwitch`).
     /// Empty strings / zeros mean "leave unchanged"; input `"__none__"`

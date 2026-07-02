@@ -41,7 +41,8 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use sonicpi_core::audio::{
-    metrics_idx, MetricsReader, ScopeReader, ScopeSlotReader, SCOPE_SHM_NAME,
+    metrics_idx, spectrum, MetricsReader, ScopeReader, ScopeSlotReader, SpectrumFrame,
+    SpectrumProcessor, SCOPE_SHM_NAME,
 };
 use sonicpi_core::osc::{OscServer, UdpOscSender};
 use sonicpi_core::paths::{resolve, SonicPiPath};
@@ -576,6 +577,13 @@ impl Backend {
         }
     }
 
+    /// Set the Link tempo (real backend only).
+    fn set_bpm(&self, bpm: f32) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.send_to_supersonic(&protocol::out::clock_tempo_set(bpm));
+        }
+    }
+
     /// Where this backend's engine publishes its scope shm, if known.
     fn scope_shm_name(&self) -> String {
         match self {
@@ -968,6 +976,12 @@ struct SonicSpike {
     /// Latest real waveform window (kept between publishes so the scope
     /// doesn't blank when the engine is silent).
     scope_samples: Vec<f32>,
+    /// Scope display mode: waveform or FFT spectrum.
+    show_spectrum: bool,
+    /// Rolling mono window feeding the FFT (last FRAME_SAMPLES samples).
+    spectrum_rolling: Vec<f32>,
+    spectrum_proc: SpectrumProcessor,
+    spectrum_frame: Option<SpectrumFrame>,
     /// True once real data has flowed at least once; gates the demo sine.
     scope_live: bool,
     /// Tick countdown to the next (re)attach attempt while Detached.
@@ -991,6 +1005,8 @@ struct SonicSpike {
     out_devices: Option<AudioDevicesInfo>,
     in_devices: Option<AudioInputDevicesInfo>,
     settings_open: bool,
+    /// Previous tap-tempo press, for the interval → BPM conversion.
+    last_tap: Option<std::time::Instant>,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -1135,6 +1151,10 @@ impl SonicSpike {
             scope: ScopeSource::Detached,
             metrics: None,
             scope_samples: Vec::new(),
+            show_spectrum: false,
+            spectrum_rolling: Vec::new(),
+            spectrum_proc: SpectrumProcessor::new(),
+            spectrum_frame: None,
             scope_live: false,
             scope_retry: 0,
             phase: 0.0,
@@ -1149,6 +1169,7 @@ impl SonicSpike {
             out_devices: None,
             in_devices: None,
             settings_open: false,
+            last_tap: None,
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -1192,6 +1213,7 @@ impl SonicSpike {
             ScopeSource::RealSlot(r) => {
                 if r.pull_latest_mono(&mut self.scope_samples) {
                     self.scope_live = true;
+                    self.feed_spectrum();
                 }
             }
             ScopeSource::FakeRing(r) => {
@@ -1199,8 +1221,29 @@ impl SonicSpike {
                 if r.read_latest_mono(&mut buf, 1024) {
                     self.scope_samples = buf;
                     self.scope_live = true;
+                    self.feed_spectrum();
                 }
             }
+        }
+        if self.show_spectrum && self.scope_live {
+            let sample_rate = self
+                .out_devices
+                .as_ref()
+                .map(|d| d.sample_rate as u32)
+                .filter(|&r| r > 0)
+                .unwrap_or(48_000);
+            self.spectrum_frame =
+                Some(self.spectrum_proc.process(&self.spectrum_rolling, sample_rate, 64));
+        }
+    }
+
+    /// Append the newest scope window to the rolling FFT input (keep the
+    /// most recent FRAME_SAMPLES).
+    fn feed_spectrum(&mut self) {
+        self.spectrum_rolling.extend_from_slice(&self.scope_samples);
+        let overflow = self.spectrum_rolling.len().saturating_sub(spectrum::FRAME_SAMPLES);
+        if overflow > 0 {
+            self.spectrum_rolling.drain(0..overflow);
         }
     }
 
@@ -1338,6 +1381,14 @@ impl SonicSpike {
                     })),
             )
             .child(
+                Button::new("scope-mode")
+                    .label(if self.show_spectrum { "〰 Wave" } else { "▁▃▅ Spec" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_spectrum = !this.show_spectrum;
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("theme-toggle")
                     .label(if cx.theme().is_dark() { "☀" } else { "☾" })
                     .on_click(cx.listener(|_, _, window, cx| {
@@ -1358,10 +1409,75 @@ impl SonicSpike {
             )
     }
 
+    /// Nudge the Link tempo by `delta` BPM (metrics give the current value).
+    fn nudge_bpm(&mut self, delta: f32) {
+        let current =
+            self.metrics.as_ref().and_then(|m| m.link_bpm()).unwrap_or(60.0) as f32;
+        let next = (current + delta).clamp(20.0, 400.0);
+        self.backend.set_bpm(next);
+        self.log.push(LogLine::info(format!("→ BPM → {next:.1}")));
+    }
+
+    /// Tap tempo: two taps ≤ 3s apart set the BPM from the interval.
+    fn tap_tempo(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.last_tap.replace(now) {
+            let secs = now.duration_since(prev).as_secs_f32();
+            if secs > 0.0 && secs < 3.0 {
+                let bpm = (60.0 / secs).clamp(20.0, 400.0);
+                self.backend.set_bpm(bpm);
+                self.log.push(LogLine::info(format!("→ Tap tempo → {bpm:.1} BPM")));
+            }
+        }
+    }
+
     /// Settings pane: audio output/input pickers driven by the engine's own
-    /// device pushes (`/supersonic/devices` + `/supersonic/input-devices`).
+    /// device pushes (`/supersonic/devices` + `/supersonic/input-devices`),
+    /// Link tempo controls, and a live engine-metrics strip.
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut pane = v_flex().gap_2().p_2().text_sm();
+
+        // Link tempo row.
+        let bpm = self.metrics.as_ref().and_then(|m| m.link_bpm());
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_xs().child(match bpm {
+                    Some(b) => format!("Tempo {b:.1} BPM"),
+                    None => "Tempo (waiting for engine)".to_string(),
+                }))
+                .child(Button::new("bpm-down").xsmall().outline().label("−5").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.nudge_bpm(-5.0);
+                        cx.notify();
+                    }),
+                ))
+                .child(Button::new("bpm-up").xsmall().outline().label("+5").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.nudge_bpm(5.0);
+                        cx.notify();
+                    }),
+                ))
+                .child(Button::new("bpm-tap").xsmall().outline().label("Tap").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.tap_tempo();
+                        cx.notify();
+                    }),
+                )),
+        );
+
+        // Engine metrics strip (self-describing shm metrics array).
+        if let Some(m) = &self.metrics {
+            let line = format!(
+                "engine: {} callbacks · {} msgs · queue {} · Link peers {}",
+                m.get(metrics_idx::PROCESS_COUNT).unwrap_or(0),
+                m.get(metrics_idx::MESSAGES_PROCESSED).unwrap_or(0),
+                m.get(metrics_idx::SCHEDULER_QUEUE_DEPTH).unwrap_or(0),
+                m.get(metrics_idx::LINK_PEERS).unwrap_or(0),
+            );
+            pane = pane.child(div().text_xs().text_color(cx.theme().muted_foreground).child(line));
+        }
 
         match &self.out_devices {
             Some(d) => {
@@ -1462,11 +1578,63 @@ impl SonicSpike {
             .child(child)
     }
 
+    /// Spectrum analyser bars + peak-hold markers from the latest FFT frame.
+    fn spectrum_el(&self, cx: &Context<Self>) -> AnyElement {
+        let color = cx.theme().primary;
+        let peak_color = cx.theme().danger;
+        let frame = self.spectrum_frame.clone().unwrap_or_default();
+        div()
+            .w_full()
+            .h(px(150.))
+            .child(
+                canvas(
+                    move |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        if frame.bars.is_empty() {
+                            return;
+                        }
+                        let bw = f32::from(bounds.size.width);
+                        let bh = f32::from(bounds.size.height);
+                        let x0 = f32::from(bounds.origin.x);
+                        let y0 = f32::from(bounds.origin.y);
+                        let bar_w = (bw / frame.bars.len() as f32).max(1.0);
+                        for (i, (&bar, &peak)) in
+                            frame.bars.iter().zip(frame.peaks.iter()).enumerate()
+                        {
+                            let x = x0 + i as f32 * bar_w;
+                            let h = bar * bh;
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: point(px(x), px(y0 + bh - h)),
+                                    size: size(px((bar_w * 0.8).max(1.0)), px(h.max(1.0))),
+                                },
+                                color,
+                            ));
+                            // Peak-hold marker: a thin line above the bar.
+                            let py = y0 + bh - peak * bh;
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: point(px(x), px(py)),
+                                    size: size(px((bar_w * 0.8).max(1.0)), px(2.0)),
+                                },
+                                peak_color,
+                            ));
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
     /// (element, is_live): latest engine window once data has flowed, demo
     /// sine otherwise. The window itself is pulled in `poll_scope`.
     fn scope(&self, cx: &Context<Self>) -> (AnyElement, bool) {
-        let color = cx.theme().primary;
         let live = self.scope_live && !self.scope_samples.is_empty();
+        if self.show_spectrum && live {
+            return (self.spectrum_el(cx), true);
+        }
+        let color = cx.theme().primary;
         let mut samples: Vec<f32> = if live { self.scope_samples.clone() } else { Vec::new() };
 
         if !live {
