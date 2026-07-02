@@ -1,0 +1,165 @@
+# Status & next priorities
+
+> Session handoff — written 2026-07-02 so work can resume in a fresh context.
+> Read order for a new session: this file, then `02-implementation-plan.md`
+> for detail, `00-roadmap.md` for the why.
+
+## Decisions (settled — don't re-litigate)
+
+1. **Keep** the Ruby Spider runtime + SuperSonic engine (+ MIDI, inside
+   SuperSonic). **Replace** Qt GUI + C++ `app/api` + `daemon.rb` supervision
+   with one native Rust app.
+2. **Frontend: GPUI** (native, gpui-component widgets). Web/Tauri is a recorded
+   fallback only. We accept + own the Tier-2 editable-text a11y workstream.
+3. Validation strategy: everything speaks the existing OSC/`IAPIClient`/shm
+   contract, so the current app remains the oracle.
+
+## What exists and works (all tested)
+
+- **`experiments/rust-core/`** — the Phase-2 Rust core (stable Rust, no GPUI):
+  OSC vocabulary + parsers (`protocol`), daemon handshake (`ports`), UDP
+  transport (`osc`), session wiring w/ keep-alive (`session`), `IAPIClient`
+  mirror (`client`), daemon spawn (`process`, integration-tested vs stub),
+  **shm scope reader** (`audio::shm` — byte-for-byte mirror of SuperSonic's
+  ring; layout/atomics/wrap tested). 9 unit + 2 integration tests green.
+  Examples: `contract_demo`, `loopback_run`.
+- **`experiments/gpui-spike/`** — the GPUI frontend (needs Rust 1.95 via its
+  `rust-toolchain.toml`, plus `libxkbcommon-x11-dev`):
+  3-buffer editor w/ tabs, Run ▶ / Stop ■ through the core's real OSC,
+  run-flash, live Log pane (structured `ClientEvent`s), error-line red
+  underline via `Diagnostic`, comment-toggle (`#`), Scope canvas reading the
+  shm ring (`shm_writer` = fake engine), Cues pane.
+  **Startup tries the real `daemon.rb` → `Session`; falls back to an
+  in-process loopback spider and says so in the Log.**
+- **Accessibility**: panes have AccessKit roles/labels (Tier-1); editor is in
+  the a11y tree as ENTRY via a custom `EditorA11y` element carrying the text
+  as value. **Verified via AT-SPI bus walk** (busctl on
+  `/run/user/1000/at-spi/bus` with org.a11y.Status enabled — see
+  `01-spike-results.md` for the method).
+- **Qt Phase-0 fix** (uncommitted in working tree): "Copy All" on Log/Cues
+  context menu (`app/gui/widgets/sonicpilog.cpp`) + comment fix in
+  `mainwindow.cpp`. Needs a Qt build to runtime-verify.
+
+## ✅ MILESTONE: the audible test PASSED (2026-07-02)
+
+Human-verified: Run ▶ on buffer 1 against the real stack → drums heard
+(first attempt was silent — audio was routed to headphones, not the
+speakers; the stack was fine). Still to exercise by ear: Stop, buffer
+switching, `#`, error underline against real Ruby errors.
+
+## ✅ MILESTONE: real-runtime E2E ACHIEVED (2026-07-02)
+
+SuperSonic built (after `libjack-jackd2-dev`; binary deployed to
+`app/server/native/supersonic`, ~11.5MB Release). Launched the GPUI app:
+**Log reads "=> Connected to REAL Sonic Pi daemon."** followed by live engine
+traffic (`/supersonic/devices`, `/supersonic/input-devices`, `/supersonic/info`,
+…). Daemon log confirms the full stack ran: SuperSonic JUCE audio device active
+(hundreds of callbacks), MIDI ports enumerated, Spider booted. The GPUI
+frontend → Rust core → real daemon/Spider/SuperSonic path works end-to-end.
+
+Two follow-ups discovered:
+- **Shutdown**: the spike doesn't send `/daemon/exit` on quit, and the daemon's
+  keep-alive kill-switch took >60s to fire (had to pkill). Wire
+  `session.shutdown()` into app quit (and consider Drop on `Backend::Real`).
+- The engine floods `/supersonic/*` + other unmodelled messages on connect —
+  they surface as `Unhandled` in the Log (correct behaviour, now needs
+  modelling; see priority 4).
+
+## Done 2026-07-02 later session (27 tests green: rust-core 18, spike 9)
+
+- **Clean shutdown RUNTIME-VERIFIED**: `SONIC_SPIKE_AUTOQUIT=<secs>` env quits
+  through the same path as window close (Wayland WM close can't be scripted);
+  observed "daemon exited cleanly", exit 0, no leftover processes, shm
+  unlinked. The golden-capture example verified the polite path a second time.
+- **✅ TIER-2 A11Y ACHIEVED (the Phase-1 gate is fully closed).** `EditorA11y`
+  now publishes AccessKit `TextRun` children (per line: value incl. `\n`,
+  UTF-8 char lengths, word starts) + `text_selection` mapped from
+  `InputState`'s byte offsets. **Verified via busctl walk: the editor node
+  exposes `org.a11y.atspi.Text`** — CharacterCount/CaretOffset/GetText all
+  answer with real buffer content; line-granularity `GetStringAtOffset` works.
+  Known gaps: WORD granularity unsupported by AccessKit's AT-SPI adapter
+  (upstream); run NodeIds are one frame stale (selection valid from frame 2);
+  no `character_positions`/`widths` (screen-magnifier caret tracking) yet.
+  Mechanism notes: child elements' a11y nodes nest via the prepaint stack;
+  NodeIds mirror `GlobalElementId`'s DefaultHasher hash (`accesskit_id_of`).
+- **Editor align**: `reindent()` (do/end-aware, 2-space, modifier-`if` safe) +
+  "⇥ Align" button — the Qt "align text" equivalent. Enter already keeps
+  indentation (gpui-component code-editor mode does that natively).
+- **Log pane rebuilt**: structured `LogLine`s — per-run colour cycling (6-colour
+  palette like `SonicPiLog`), errors red, multi-message rows indented under a
+  `{run N}` header.
+- **Cues pane LIVE**: `ClientEvent::Cue` (from `/incoming/osc`) → cues editor
+  (kept selectable); first real cue replaces the placeholder; 200-line cap.
+- **Protocol coverage**: `/supersonic/devices` (names-until-first-int wire
+  quirk), `/supersonic/input-devices`, `/supersonic/info` now parse into
+  `AudioDevices`/`AudioInputDevices`/`Scsynth` events, tested. `/version` was
+  already modelled.
+- **Metrics from shm**: `MetricsReader` (self-describing `PerformanceMetrics`
+  u32 array; `metrics_idx` constants; `link_bpm()` decodes milli-BPM). Header
+  shows live "N BPM · Link peers".
+- **Golden OSC fixtures**: `examples/golden_capture.rs` boots the real daemon,
+  drives a silent (`amp: 0`) run, records 163 real messages hex-encoded to
+  `tests/fixtures/golden_osc.hex`; `tests/golden_osc.rs` asserts every address
+  is recognised and ≥80% fully parse. Refresh: rerun the example.
+- **UX from live user feedback**: colour-only Run/Stop press pulses (~250ms,
+  no layout shift), ●playing/○idle indicator, Stop danger-red while playing,
+  instant log echo on clicks. **Dark mode default** + ☀/☾ header toggle
+  (`gpui_component::Theme::change`).
+- **Real scope confirmed live end-to-end** (user-visible waveform from the
+  engine's triple-buffered scope slot 0).
+- Gotcha: SIGTERM-killed engines leave stale `/dev/shm/SuperSonic_*` segments
+  (no unlink); remove stale ones before probing. Clean quits unlink correctly.
+
+## Next priorities (3a is DONE; onward into 3c/3d)
+
+1. **3c discoverability**: autocomplete (gpui-component has LSP/completion
+   machinery — investigate what `InputState` exposes), then the completion
+   popup w/ docs, then Help/docs browser rendering the generated doc html.
+2. **3d configuration**: settings surface (audio devices — the events now
+   exist), MIDI config, theme system beyond dark/light, i18n pipeline.
+3. **Tier-2 a11y polish**: `character_positions`/`widths` from the editor's
+   line layout; upstream the TextRun approach to gpui-component; a11y for
+   Log/Cues panes (currently label-only).
+4. **Commit checkpoint**: everything is still uncommitted (experiments/, plan/,
+   the Phase-0 Qt fix). E2E + audible test both pass — good moment to land it.
+
+## Done 2026-07-02 (earlier session — 13 tests)
+
+- **Clean shutdown implemented**: `Context::on_app_quit` → `Backend::shutdown()`
+  → `session.shutdown()` (`/daemon/exit`) + `Daemon::wait_timeout(3s)` +
+  `kill()` backstop; `impl Drop for Daemon` as final backstop;
+  `cx.on_window_closed` quits the app when the last window closes (before,
+  the process + daemon lingered). NOT yet runtime-verified — needs one
+  app-quit while watching the process table.
+- **Real scope wired**: new `ScopeSlotReader` in `rust-core::audio::shm`
+  mirrors SuperSonic's fixed-inline triple-buffered scope slot
+  (`server_shm.hpp::shm_scope_buffer_reader`; planar data, `stage` publishes).
+  Probed live against a running engine: attaches, slot 0 ACTIVE, pulls
+  1024-frame windows. KEY FACT: the audio *ring* (slot-0 recording tap) is
+  IDLE on native — only WASM writes it from the post-block hook; native needs
+  a `supersonic-audio-out` synth. The scope path is the live one. The spike
+  attaches lazily (retry ~1s, segment appears after handshake) to
+  `/SuperSonic_<scsynth port>` slot 0, falls back to the fake ring under
+  loopback, demo sine until data flows.
+- **Button feedback** (user feedback): header now shows ●playing/○idle;
+  Stop ■ is danger-red while playing, outline when idle; Run/Stop clicks
+  echo instantly into the Log; `playing` clears on `StatusType::AllComplete`
+  from the spider (and optimistically on Stop click).
+- `examples/scope_probe.rs` in rust-core probes a live segment (audio ring +
+  scope slots): `cargo run --example scope_probe -- /SuperSonic_<port>`.
+
+(The earlier session's priority list is superseded by "Next priorities" above;
+the Phase-0 Qt copy fix still needs its one-time Qt build + smoke test.)
+
+## Environment gotchas (will bite a fresh session)
+
+- gpui-spike builds with **nightly 1.95** (`rust-toolchain.toml` handles it);
+  rust-core is stable. First gpui build ≈ several minutes.
+- GPUI pins: gpui-component @ `1505b14`, zed/gpui @ `1d217ee` — bump together.
+- A **separate containerized Sonic Pi** runs under `/app` on this machine
+  (different checkout) — ignore its processes.
+- The a11y bus test flags: enable/disable `org.a11y.Status` `IsEnabled` +
+  `ScreenReaderEnabled` via gdbus; always restore to false after.
+- `git status`: `experiments/`, `plan/` are new/untracked; `mainwindow.cpp`,
+  `sonicpilog.cpp` modified (Phase 0); submodule now populated. Nothing is
+  committed yet — decide what to commit when the E2E run works.
