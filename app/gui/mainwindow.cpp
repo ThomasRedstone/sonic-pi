@@ -642,10 +642,12 @@ void MainWindow::setupWindowStructure()
     // Let `play` completion show only the active synth's opts by resolving the
     // in-effect use_synth from the focused buffer at completion time.
     autocomplete->setSynthResolver([this]() { return currentSynthForCompletion(); });
-    // adding universal shortcuts to outputpane seems to
-    // steal events from doc system!?
-    // addUniversalCopyShortcuts(outputPane);
-
+    // NB: don't call addUniversalCopyShortcuts() on the Log/Cues panes. They are
+    // QPlainTextEdit (SonicPiLog), which already handles Copy/Select All natively
+    // when focused; adding explicit Ctrl+C/Ctrl+A QShortcuts on top produces an
+    // "ambiguous shortcut overload" (the old "steals events from doc system"
+    // symptom). Those panes get copy via native keys + their context menu
+    // (Copy / Copy All / Select All) in SonicPiLog::contextMenuEvent instead.
     addUniversalCopyShortcuts(errorPane);
     outputPane->setReadOnly(true);
     outputPane->setLineWrapMode(QPlainTextEdit::NoWrap);

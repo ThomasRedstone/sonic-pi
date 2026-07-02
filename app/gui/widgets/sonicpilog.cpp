@@ -17,7 +17,10 @@
 #include "model/sonicpitheme.h"
 #include <QScrollBar>
 #include <QMenu>
+#include <QAction>
 #include <QContextMenuEvent>
+#include <QGuiApplication>
+#include <QClipboard>
 #include <vector>
 
 SonicPiLog::SonicPiLog(QWidget* parent)
@@ -66,11 +69,18 @@ int SonicPiLog::currentZoomLevel() const
 
 void SonicPiLog::contextMenuEvent(QContextMenuEvent* event)
 {
-    // Standard menu (copy/select-all) plus Clear — the idiomatic action for a
-    // log/output view.
+    // Standard menu already offers Copy (when there's a selection) and Select
+    // All. We add two conveniences for a log/output view:
+    //  - "Copy All": grab the whole pane in one click (e.g. to paste a run's
+    //    output into a bug report) without disturbing the current selection.
+    //  - "Clear": empty the view.
     QMenu* menu = createStandardContextMenu();
     if (!menu) menu = new QMenu(this);
     menu->addSeparator();
+    QAction* copyAllAct = menu->addAction(tr("Copy All"));
+    copyAllAct->setEnabled(!document()->isEmpty());
+    connect(copyAllAct, &QAction::triggered, this,
+            [this] { QGuiApplication::clipboard()->setText(toPlainText()); });
     menu->addAction(tr("Clear"), this, [this] { clear(); });
     menu->exec(event->globalPos());
     delete menu;
