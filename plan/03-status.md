@@ -151,16 +151,43 @@ Two follow-ups discovered:
   oracle setup). Copy All context-menu smoke test: awaiting the human
   right-click.
 
+## Done 2026-07-02 (late session)
+
+- **Node-tree pane** (♪): `NodeTreeReader` mirrors NodeTreeHeader/NodeEntry
+  from shared_memory.h; version-gated refresh; synthetic-segment test.
+- **Debug-log toggle** (Dbg): internals rows (unmodelled OSC etc.) tagged
+  and hidden by default — Qt hide/reveal-debug-logs parity.
+- **Fixes from live use**: pane bodies clip + min_w(0) (device list bled
+  across panes; long lines pushed the layout wider than the window, moving
+  the titlebar controls off the corner — user-confirmed fixed); /incoming/
+  osc parsed in the wrong arg order (address got the timestamp — regression-
+  tested); cue rows now `+N.NNNs addr args` relative to the first cue;
+  client-side window controls (– □ ✕) + title drag (no SSD on GNOME
+  Wayland); close routes through clean shutdown.
+- **CI**: `.github/workflows/sonic-oxide.yml` — both suites on push/PR.
+- **A11y re-verified** post-changes via AT-SPI walk (all rendered panes
+  expose role+name; editor Text interface unchanged). NOTE: the AccessKit
+  adapter registers on `ScreenReaderEnabled`, dynamically — no app restart
+  needed; `IsEnabled` alone does not trigger registration. WARNING: setting
+  ScreenReaderEnabled starts Orca SPEAKING on the user's desktop — keep the
+  window short and kill it with `pkill -f bin/orca` (it runs as
+  `python3 /usr/bin/orca`, so `pkill -f "^orca"` misses).
+- 24 core + 18 spike tests green.
+
 ## Next priorities
 
-1. **3e remainder**: node-tree viz (shm node-tree region is self-described
-   in the segment header), OSC/debug panel, dock system vs fixed splits.
-2. **Tier-2 a11y polish**: `character_positions`/`widths`, a11y for the new
-   Help/Settings panes, upstream the TextRun approach to gpui-component.
+1. **Dock system**: gpui-component `DockArea` instead of fixed splits
+   (drag/collapse/resize panes — the Qt parity item with the most daily
+   feel impact).
+2. **Phase 4 start — RustDaemon**: fold daemon.rb's supervision into
+   `sonicpi-core::process` (port allocation, spawn Spider + SuperSonic
+   directly, keep-alive kill-switch) → 4→3 processes. Validate by running
+   the spike against it with the daemon.rb path as A/B fallback.
 3. **3c**: piano/slider completion-popup helpers; Help pane → full lang
    `doc:` bodies (only summaries today).
-4. **Phase 4 prep**: fold daemon supervision into the core (port alloc +
-   kill-switch); unified cargo build + packaging.
+4. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
+   TextRun approach to gpui-component.
+5. **i18n groundwork** (3d): string table + gettext-compatible extraction.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
