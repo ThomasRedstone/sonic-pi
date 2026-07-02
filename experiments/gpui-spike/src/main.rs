@@ -28,6 +28,23 @@ use vocab::{word_prefix_at, Vocab, VocabKind};
 // Live-coding keyboard shortcuts (bound in `main`, handled on the root view).
 actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer]);
 
+/// Header commands — one identity shared by mouse clicks, keyboard actions
+/// and screen-reader Click actions.
+#[derive(Clone, Copy)]
+enum Cmd {
+    Run,
+    Stop,
+    Rec,
+    Comment,
+    Align,
+    ScopePause,
+    ScopeMode,
+    Settings,
+    Help,
+    Nodes,
+    Debug,
+}
+
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Root, Sizable as _,
@@ -1525,72 +1542,74 @@ impl SonicSpike {
                     .text_color(if playing { cx.theme().primary } else { cx.theme().muted_foreground })
                     .child(if playing { "● playing" } else { "○ idle" }),
             )
-            .child(
-                run
-                    .on_click(cx.listener(|this, _, _, cx| this.run_active(cx))),
-            )
-            .child(stop.on_click(cx.listener(|this, _, _, cx| this.stop_all(cx))))
+            .child(self.a11y_ctl(
+                "a11y-run",
+                "Run the current buffer",
+                Cmd::Run,
+                run.on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Run, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-stop",
+                "Stop all runs",
+                Cmd::Stop,
+                stop.on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Stop, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
             .child({
                 let rec = Button::new("record").label("⏺ Rec");
                 let rec = if self.recording.is_some() { rec.danger() } else { rec.outline() };
-                rec.on_click(cx.listener(|this, _, _, cx| {
-                    match this.recording.take() {
-                        Some(path) => {
-                            this.backend.record_stop();
-                            this.log.push(LogLine::info(format!(
-                                "→ Recording saved: {}",
-                                path.display()
-                            )));
-                        }
-                        None => {
-                            let dir = this.store_dir.join("recordings");
-                            let _ = std::fs::create_dir_all(&dir);
-                            let stamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let path = dir.join(format!("rec-{stamp}.wav"));
-                            this.backend.record_start(&path.to_string_lossy());
-                            this.log.push(LogLine::info(format!(
-                                "→ Recording to {}",
-                                path.display()
-                            )));
-                            this.recording = Some(path);
-                        }
-                    }
-                    cx.notify();
-                }))
+                self.a11y_ctl(
+                    "a11y-rec",
+                    "Toggle recording",
+                    Cmd::Rec,
+                    rec.on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Rec, w, cx)))
+                        .into_any_element(),
+                    cx,
+                )
             })
-            .child(
+            .child(self.a11y_ctl(
+                "a11y-comment",
+                "Toggle comment on selection",
+                Cmd::Comment,
                 Button::new("toggle-comment")
                     .label("#")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.comment_active(window, cx)
-                    })),
-            )
-            .child(
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Comment, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-align",
+                "Align buffer indentation",
+                Cmd::Align,
                 Button::new("align")
                     .label("⇥ Align")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.align_active(window, cx)
-                    })),
-            )
-            .child(
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Align, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-scope-pause",
+                "Pause or resume the scope",
+                Cmd::ScopePause,
                 Button::new("scope-toggle")
                     .label(if running { "Scope ⏸" } else { "Scope ▶" })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.running = !this.running;
-                        cx.notify();
-                    })),
-            )
-            .child(
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::ScopePause, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-scope-mode",
+                "Switch scope between waveform and spectrum",
+                Cmd::ScopeMode,
                 Button::new("scope-mode")
                     .label(if self.show_spectrum { "〰 Wave" } else { "▁▃▅ Spec" })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_spectrum = !this.show_spectrum;
-                        cx.notify();
-                    })),
-            )
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::ScopeMode, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
             .child(
                 Button::new("theme-toggle")
                     .label(if cx.theme().is_dark() { "☀" } else { "☾" })
@@ -1604,26 +1623,48 @@ impl SonicSpike {
                         cx.notify();
                     })),
             )
-            .child(
-                Button::new("settings-toggle").label("⚙").on_click(cx.listener(|this, _, _, cx| {
-                    this.settings_open = !this.settings_open;
-                    cx.notify();
-                })),
-            )
-            .child(Button::new("help-toggle").label("?").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.help_open = !this.help_open;
-                    cx.notify();
-                },
-            )))
-            .child(Button::new("nodes-toggle").label("♪").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.nodes_open = !this.nodes_open;
-                    this.node_version = 0; // force a refresh on open
-                    cx.notify();
-                },
-            )))
-            .child(self.header_debug_toggle(cx))
+            .child(self.a11y_ctl(
+                "a11y-settings",
+                "Toggle settings pane",
+                Cmd::Settings,
+                Button::new("settings-toggle")
+                    .label("⚙")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Settings, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-help",
+                "Toggle help pane",
+                Cmd::Help,
+                Button::new("help-toggle")
+                    .label("?")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Help, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-nodes",
+                "Toggle node tree pane",
+                Cmd::Nodes,
+                Button::new("nodes-toggle")
+                    .label("♪")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Nodes, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child({
+                let btn = Button::new("debug-toggle").label("Dbg");
+                let btn = if self.show_debug { btn.primary() } else { btn };
+                self.a11y_ctl(
+                    "a11y-debug",
+                    "Toggle debug log rows",
+                    Cmd::Debug,
+                    btn.on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Debug, w, cx)))
+                        .into_any_element(),
+                    cx,
+                )
+            })
             // Window controls: GNOME Wayland gives us no server-side
             // decorations, so minimise/maximise/close live here. Close goes
             // through remove_window → on_window_closed → the clean-shutdown
@@ -1847,13 +1888,89 @@ impl SonicSpike {
         pane.overflow_y_scroll().into_any_element()
     }
 
-    fn header_debug_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let btn = Button::new("debug-toggle").label("Dbg");
-        let btn = if self.show_debug { btn.primary() } else { btn };
-        btn.on_click(cx.listener(|this, _, _, cx| {
-            this.show_debug = !this.show_debug;
-            cx.notify();
-        }))
+    /// Start/stop recording (Rec button + its a11y action share this).
+    fn toggle_record(&mut self, cx: &mut Context<Self>) {
+        match self.recording.take() {
+            Some(path) => {
+                self.backend.record_stop();
+                self.log.push(LogLine::info(format!("→ Recording saved: {}", path.display())));
+            }
+            None => {
+                let dir = self.store_dir.join("recordings");
+                let _ = std::fs::create_dir_all(&dir);
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let path = dir.join(format!("rec-{stamp}.wav"));
+                self.backend.record_start(&path.to_string_lossy());
+                self.log.push(LogLine::info(format!("→ Recording to {}", path.display())));
+                self.recording = Some(path);
+            }
+        }
+        cx.notify();
+    }
+
+    /// One dispatch point for header commands: mouse clicks and screen-reader
+    /// Click actions both land here.
+    fn dispatch(&mut self, cmd: Cmd, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            Cmd::Run => self.run_active(cx),
+            Cmd::Stop => self.stop_all(cx),
+            Cmd::Rec => self.toggle_record(cx),
+            Cmd::Comment => self.comment_active(window, cx),
+            Cmd::Align => self.align_active(window, cx),
+            Cmd::ScopePause => {
+                self.running = !self.running;
+                cx.notify();
+            }
+            Cmd::ScopeMode => {
+                self.show_spectrum = !self.show_spectrum;
+                cx.notify();
+            }
+            Cmd::Settings => {
+                self.settings_open = !self.settings_open;
+                cx.notify();
+            }
+            Cmd::Help => {
+                self.help_open = !self.help_open;
+                cx.notify();
+            }
+            Cmd::Nodes => {
+                self.nodes_open = !self.nodes_open;
+                self.node_version = 0;
+                cx.notify();
+            }
+            Cmd::Debug => {
+                self.show_debug = !self.show_debug;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Wrap a control so screen readers see (and can activate) it: a Button
+    /// node with a label and a Click action routed through `dispatch` —
+    /// gpui-component's own widgets emit no AccessKit nodes yet.
+    fn a11y_ctl(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        cmd: Cmd,
+        inner: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .on_a11y_action(accesskit::Action::Click, move |_, window, app| {
+                if let Some(ent) = weak.upgrade() {
+                    ent.update(app, |this, cx| this.dispatch(cmd, window, cx));
+                }
+            })
+            .child(inner)
+            .into_any_element()
     }
 
     /// Live node tree: groups and synths from the engine's shm mirror,
