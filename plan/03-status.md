@@ -269,18 +269,27 @@ and caught three real bundle bugs (etc/buffers, etc/synthdefs, VERSION
 file × 2 layouts). Bundle 220MB + AppDir both PASS from relocated dirs.
 Debugging aid: SONIC_OXIDE_DEBUG_CHILDREN=1 inherits child stdio.
 
-## Next priorities (the remaining tail)
+## ✅ MILESTONE: SHIPPABLE ARTIFACT (2026-07-02)
 
-1. **DockArea drag-to-rearrange** — the last dock piece; a real refactor
-   (panes become Panel entities).
-2. **i18n**: remaining strings (button captions, log prefixes, Help/
-   Settings body text), then .po migration.
-3. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
-   editor a11y glyph metrics.
-4. **Packaging v3**: AppImage on a machine with appimagetool; mac/windows
-   scripts; CI artifact upload.
-5. **Qt retirement** per roadmap exit criteria — after sustained
-   side-by-side parity use (weeks, not hours).
+`SonicOxide-x86_64.AppImage` — 71MB, single file, self-contained (bundled
+Ruby, Spider, SuperSonic, all assets). Passes its own smoke test: full
+runtime up from the mounted image, verified teardown. appimagetool
+installs user-locally (no sudo): the release download in the AppImage
+project's GitHub releases. i18n sweep complete for interactive UI text.
+
+## Remaining tail (all scoped, none blocking a usable release)
+
+1. **DockArea drag-to-rearrange** — the one big local refactor left:
+   every pane becomes an Entity implementing gpui-component's Panel
+   trait, render state moves out of SonicSpike into per-pane views.
+   Deserves a dedicated session; fold + resize already cover daily use.
+2. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
+   editor a11y glyph metrics — PRs/issues, external cadence.
+3. **i18n**: .po migration + more locales (mechanism + de demo done).
+4. **Packaging v3**: mac/windows scripts, CI artifact upload.
+5. **Qt retirement** per roadmap exit criteria — REQUIRES sustained
+   side-by-side daily use (weeks). The code work to enable that
+   comparison is done: both apps run, same features exercised.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
