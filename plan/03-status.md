@@ -134,20 +134,33 @@ Two follow-ups discovered:
   (the command text embeds the pattern) and kills the shell — use
   `pkill -x sonic-gpui-spik` (comm name, 15-char truncated).
 
+## Done 2026-07-02 (continued)
+
+- **Opt completion (3c)**: synth/fx opts (`cutoff:`, `mix:`, defaults from
+  the cheatsheets) complete after their symbol — last symbol before the
+  caret wins, spanning lines (use_synth-persists semantics).
+- **Recording (3e)**: `/supersonic/record/start|stop` (JUCE-side recorder,
+  the DiskOut-free path Studio#recording_start uses). ⏺ Rec button →
+  `~/.sonic-pi/store/sonic-oxide/recordings/`. **E2E PASS**:
+  `cargo run --example record_check` boots the runtime, records 5s,
+  validates the RIFF/WAVE on disk (1.4MB), exits non-zero for CI.
+- **Qt app BUILT and RUNNING** (Phase-0 closeout): needed the missing dev
+  packages + `./linux-pre-translations.sh` first (generates
+  `gui/utils/ruby_help.h` — cmake fails without it). Binary:
+  `app/build/gui/sonic-pi`. Running side-by-side with Oxide (the Phase-3
+  oracle setup). Copy All context-menu smoke test: awaiting the human
+  right-click.
+
 ## Next priorities
 
-1. **Phase-0 closeout (BLOCKED on sudo)**: Qt build needs
-   `sudo apt install libaubio-dev libqscintilla2-qt6-dev qt6-base-dev
-   qt6-tools-dev qt6-svg-dev libqt6opengl6-dev` — then
-   `cd app && ./linux-config.sh && ./linux-build-gui.sh` and smoke-test
-   the Log/Cues Copy All context menu.
-2. **3c completion popup polish**: opt-name completion after a synth/fx
-   symbol (cheatsheet opts are already in the vocab), piano/slider helpers.
-3. **3e long tail**: recording (WAV via hound), node-tree viz, OSC/debug
-   panel; dock system instead of fixed splits.
-4. **Tier-2 a11y polish**: `character_positions`/`widths`, a11y for the new
+1. **3e remainder**: node-tree viz (shm node-tree region is self-described
+   in the segment header), OSC/debug panel, dock system vs fixed splits.
+2. **Tier-2 a11y polish**: `character_positions`/`widths`, a11y for the new
    Help/Settings panes, upstream the TextRun approach to gpui-component.
-5. **Phase 4 prep**: fold daemon supervision into the core; unified build.
+3. **3c**: piano/slider completion-popup helpers; Help pane → full lang
+   `doc:` bodies (only summaries today).
+4. **Phase 4 prep**: fold daemon supervision into the core (port alloc +
+   kill-switch); unified cargo build + packaging.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
