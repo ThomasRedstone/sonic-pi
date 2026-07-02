@@ -236,18 +236,30 @@ forces it) → loopback. Sonic Oxide now runs 3 processes by default.
   can source real glyph metrics from the editor layout — fabricated
   positions would actively mislead screen magnifiers.
 
+## Done 2026-07-02 (music vocab + i18n)
+
+- **Note/scale/chord completion** (the piano-helper substance): 153
+  generated note symbols + scale/chord names parsed from scale.rb/chord.rb
+  (real-repo test guards the parsers). Graphical piano/slider popup
+  widgets deferred — they need custom completion-menu rendering
+  (upstream gpui-component work).
+- **i18n groundwork**: English-keyed translation table
+  (gettext-compatible shape), etc/i18n/<lang>.conf via SONIC_OXIDE_LANG/
+  LANG, per-key fallback; pane titles wired; demo de.conf shipped.
+
 ## Next priorities
 
 1. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
    collapsible panes cover the fold/unfold half already.
-2. **3c**: piano/slider completion-popup helpers.
-3. **i18n groundwork** (3d): string table + gettext-compatible extraction.
-4. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
+2. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
    AppImage target, mac/windows scripts.
-5. **Tier-2 a11y**: real glyph metrics for character_positions (needs
-   editor-layout access — likely the upstream gpui-component conversation).
-6. **Qt retirement** per roadmap exit criteria — after sustained
-   side-by-side parity use, not a single-day call.
+3. **i18n sweep**: extract the remaining UI strings through tr() (titles
+   done; buttons/labels/log prefixes remain), then real .po tooling.
+4. **Upstream conversations** (gpui-component): completion-menu custom
+   widgets (piano/slider), editor a11y (TextRun approach +
+   character_positions from real layout).
+5. **Qt retirement** per roadmap exit criteria — after sustained
+   side-by-side parity use.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
