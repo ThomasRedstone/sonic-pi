@@ -75,7 +75,14 @@ echo
 cp "${REPO}/VERSION" "${DIST}/"   # Spider reads ../../../../../VERSION at boot
 du -sh "${DIST}"
 
+if [ "${SKIP_SMOKE:-0}" = "1" ]; then
+  echo "==> SKIP_SMOKE=1 — artifacts only (no display/audio, e.g. CI)"
+fi
+
+run_smoke() { [ "${SKIP_SMOKE:-0}" != "1" ]; }
+
 echo "==> relocation smoke test (bundled ruby, full runtime)"
+if run_smoke; then
 SMOKE="$(mktemp -d)/sonic-oxide"
 cp -r "${DIST}" "${SMOKE}"
 OUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${SMOKE}/bin/sonic-oxide" 2>&1 || true)"
@@ -91,6 +98,7 @@ else
   exit 1
 fi
 
+fi
 echo "==> bundle ready: ${DIST}"
 
 # ── AppImage staging (packaging v2) ──────────────────────────────────────────
@@ -123,6 +131,7 @@ exec "${HERE}/usr/bin/sonic-oxide" "$@"
 APPRUN
 chmod +x "${APPDIR}/AppRun"
 
+if run_smoke; then
 echo "==> AppDir smoke test"
 APPOUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${APPDIR}/AppRun" 2>&1 || true)"
 if echo "${APPOUT}" | grep -q "spider alive: true, engine alive: true" \
@@ -133,9 +142,11 @@ else
   exit 1
 fi
 
+fi
 if command -v appimagetool >/dev/null 2>&1; then
   echo "==> building AppImage"
   (cd "${SCRIPT_DIR}/dist" && ARCH=x86_64 appimagetool SonicOxide.AppDir SonicOxide-x86_64.AppImage)
+  if run_smoke; then
   echo "==> AppImage smoke test"
   IMGOUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${SCRIPT_DIR}/dist/SonicOxide-x86_64.AppImage" 2>&1 || true)"
   if echo "${IMGOUT}" | grep -q "spider alive: true, engine alive: true" \
@@ -144,6 +155,7 @@ if command -v appimagetool >/dev/null 2>&1; then
   else
     echo "==> APPIMAGE SMOKE TEST FAIL" >&2
     exit 1
+  fi
   fi
   echo "==> AppImage: ${SCRIPT_DIR}/dist/SonicOxide-x86_64.AppImage"
 else

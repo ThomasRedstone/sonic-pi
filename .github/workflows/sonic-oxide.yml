@@ -48,3 +48,33 @@ jobs:
       - name: Tests (headless — pure helpers, vocab, a11y geometry, store)
         working-directory: experiments/gpui-spike
         run: cargo test
+
+  package:
+    name: Linux bundle + AppImage (artifacts)
+    runs-on: ubuntu-latest
+    needs: [rust-core, gpui-spike]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/gpui-spike
+      - name: Build deps + appimagetool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libvulkan-dev libasound2-dev rsync ruby-full
+          curl -sL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+      # Runners have no display/audio, so the boot smoke is skipped here —
+      # it runs on dev machines; CI proves the artifacts assemble.
+      - name: Package (artifacts only)
+        env:
+          SKIP_SMOKE: "1"
+          APPIMAGE_EXTRACT_AND_RUN: "1" # no FUSE on runners
+        run: ./experiments/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SonicOxide-x86_64.AppImage
+          path: experiments/dist/SonicOxide-x86_64.AppImage
+          if-no-files-found: error
