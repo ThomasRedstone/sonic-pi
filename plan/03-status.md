@@ -190,17 +190,29 @@ binds 4560; supervisor allocates dynamically — external OSC/MIDI cue
 senders expect 4560). One unexplained orphaned-children incident during
 bring-up → `shutdown_verified()` + WARNING log; watch for recurrence.
 
+## Done 2026-07-02 (supervisor gaps + dock-lite)
+
+- Supervisor: osc-cues prefers well-known **4560** (external cue senders),
+  dynamic fallback; **audio-settings.toml applies** (flat-TOML → SuperSonic
+  CLI flags per OPTS_TOML_KEY_CONVERSION). Both unit-tested;
+  supervisor_check e2e re-run PASS. Remaining gap: device switching (needs
+  an engine-restart path) — daemon.rb stays the spike default until then.
+- **Collapsible panes** (dock-lite): click any pane title to fold it.
+- 26 core + 18 spike tests green.
+
 ## Next priorities
 
-1. **Supervisor gaps**: fixed osc-cues port 4560 (external cue senders),
-   TOML audio-settings opts, device switching via engine restart. Then flip
-   the spike's default to supervisor mode.
-2. **Dock system**: gpui-component `DockArea` instead of fixed splits.
+1. **Supervisor**: device switching via engine restart (last gap), then
+   flip the spike's default to supervisor mode (3 processes by default).
+2. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
+   collapsible panes cover the fold/unfold half already.
 3. **3c**: piano/slider completion-popup helpers; Help pane → full lang
    `doc:` bodies (only summaries today).
 4. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
    TextRun approach to gpui-component.
 5. **i18n groundwork** (3d): string table + gettext-compatible extraction.
+6. **Phase 4 continues**: unified cargo build + per-OS packaging once the
+   supervisor is default.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
