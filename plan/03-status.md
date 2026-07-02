@@ -200,19 +200,28 @@ bring-up → `shutdown_verified()` + WARNING log; watch for recurrence.
 - **Collapsible panes** (dock-lite): click any pane title to fold it.
 - 26 core + 18 spike tests green.
 
+## ✅ MILESTONE: supervisor is the DEFAULT boot (2026-07-02)
+
+Device switching turned out to need no engine restart — daemon.rb only
+ever FORWARDED `/daemon/audio/switch-device` → `/supersonic/devices/switch`
+(JUCE hot-swaps in place). Session now sends the switch direct in
+supervisor mode, and registers itself for device pushes via
+`/supersonic/devices/report [gui_listen]` on connect (both modes).
+supervisor_check asserts daemon-free device pushes (3 received) — PASS.
+Boot chain: supervisor default → daemon.rb fallback (`SONIC_OXIDE_DAEMON=1`
+forces it) → loopback. Sonic Oxide now runs 3 processes by default.
+
 ## Next priorities
 
-1. **Supervisor**: device switching via engine restart (last gap), then
-   flip the spike's default to supervisor mode (3 processes by default).
-2. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
+1. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
    collapsible panes cover the fold/unfold half already.
-3. **3c**: piano/slider completion-popup helpers; Help pane → full lang
+2. **3c**: piano/slider completion-popup helpers; Help pane → full lang
    `doc:` bodies (only summaries today).
-4. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
+3. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
    TextRun approach to gpui-component.
-5. **i18n groundwork** (3d): string table + gettext-compatible extraction.
-6. **Phase 4 continues**: unified cargo build + per-OS packaging once the
-   supervisor is default.
+4. **i18n groundwork** (3d): string table + gettext-compatible extraction.
+5. **Phase 4 continues**: unified cargo build + per-OS packaging; then
+   retire the Qt GUI + app/api per the roadmap exit criteria.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
