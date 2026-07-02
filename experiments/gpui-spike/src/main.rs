@@ -50,10 +50,11 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme, Root, Sizable as _,
     button::{Button, ButtonVariants as _},
+    dock::{DockArea, DockItem, Panel, PanelEvent},
     h_flex,
     highlighter::{Diagnostic, DiagnosticSeverity},
     input::{Input, InputState, Position},
-    resizable::{h_resizable, resizable_panel, v_resizable},
+    resizable::{h_resizable, resizable_panel},
     v_flex,
 };
 use gpui_component_assets::Assets;
@@ -1147,6 +1148,8 @@ struct SonicSpike {
     stop_flash: f32,
     backend: Backend,
     incoming: Arc<Mutex<Vec<ClientEvent>>>,
+    /// The right-hand dock: scope/cues/log as draggable/rearrangeable panels.
+    dock: Option<Entity<DockArea>>,
     /// Workspace persistence: where buffers autosave, and the tick countdown.
     store_dir: PathBuf,
     autosave_in: u32,
@@ -1317,6 +1320,26 @@ impl SonicSpike {
         })
         .detach();
 
+        // Dock: scope/cues/log become rearrangeable panels (drag a tab onto
+        // another panel to stack/tabs them, or between dividers to re-split).
+        let app_entity = cx.entity();
+        let dock = cx.new(|cx| DockArea::new("oxide-dock", Some(1), window, cx));
+        let weak_dock = dock.downgrade();
+        let scope_p = cx.new(|c| ScopePanel::new(app_entity.clone(), c));
+        let cues_p = cx.new(|c| CuesPanel::new(app_entity.clone(), c));
+        let log_p = cx.new(|c| LogPanel::new(app_entity.clone(), c));
+        let center = DockItem::v_split(
+            vec![
+                DockItem::tab(scope_p, &weak_dock, window, cx),
+                DockItem::tab(cues_p, &weak_dock, window, cx),
+                DockItem::tab(log_p, &weak_dock, window, cx),
+            ],
+            &weak_dock,
+            window,
+            cx,
+        );
+        dock.update(cx, |d, cx| d.set_center(center, window, cx));
+
         Self {
             buffers,
             active: 0,
@@ -1343,6 +1366,7 @@ impl SonicSpike {
             stop_flash: 0.0,
             backend,
             incoming,
+            dock: Some(dock),
             store_dir,
             autosave_in: AUTOSAVE_TICKS,
             out_devices: None,
@@ -2100,7 +2124,7 @@ impl SonicSpike {
     }
 
     /// Spectrum analyser bars + peak-hold markers from the latest FFT frame.
-    fn spectrum_el(&self, cx: &Context<Self>) -> AnyElement {
+    fn spectrum_el(&self, cx: &App) -> AnyElement {
         let color = cx.theme().primary;
         let peak_color = cx.theme().danger;
         let frame = self.spectrum_frame.clone().unwrap_or_default();
@@ -2150,7 +2174,7 @@ impl SonicSpike {
 
     /// (element, is_live): latest engine window once data has flowed, demo
     /// sine otherwise. The window itself is pulled in `poll_scope`.
-    fn scope(&self, cx: &Context<Self>) -> (AnyElement, bool) {
+    fn scope(&self, cx: &App) -> (AnyElement, bool) {
         let live = self.scope_live && !self.scope_samples.is_empty();
         if self.show_spectrum && live {
             return (self.spectrum_el(cx), true);
@@ -2202,6 +2226,105 @@ impl SonicSpike {
     }
 }
 
+// ── Dock panels: scope/cues/log as Panel entities (drag tabs to rearrange) ──
+//
+// Read-only views over SonicSpike state: each observes the app entity so it
+// re-renders on the 30fps tick, and reads state during render (immutable —
+// no listener re-plumbing needed for these three).
+
+macro_rules! oxide_panel {
+    ($name:ident, $panel_id:literal) => {
+        struct $name {
+            app: Entity<SonicSpike>,
+            focus: FocusHandle,
+        }
+
+        impl $name {
+            fn new(app: Entity<SonicSpike>, cx: &mut Context<Self>) -> Self {
+                cx.observe(&app, |_, _, cx| cx.notify()).detach();
+                let focus = cx.focus_handle();
+                Self { app, focus }
+            }
+        }
+
+        impl EventEmitter<PanelEvent> for $name {}
+
+        impl Focusable for $name {
+            fn focus_handle(&self, _cx: &App) -> FocusHandle {
+                self.focus.clone()
+            }
+        }
+
+        impl Panel for $name {
+            fn panel_name(&self) -> &'static str {
+                $panel_id
+            }
+        }
+    };
+}
+
+oxide_panel!(ScopePanel, "scope");
+oxide_panel!(CuesPanel, "cues");
+oxide_panel!(LogPanel, "log");
+
+impl Render for ScopePanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (el, live) = self.app.read(cx).scope(cx);
+        div()
+            .id("scope-panel")
+            .role(Role::Image)
+            .aria_label(if live { "Audio scope waveform (live)" } else { "Audio scope waveform" })
+            .size_full()
+            .overflow_hidden()
+            .child(el)
+    }
+}
+
+impl Render for CuesPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let cues = self.app.read(cx).cues.clone();
+        let label: SharedString = format!("Cues log. {}", cues.read(cx).value()).into();
+        div()
+            .id("cues-panel")
+            .role(Role::Group)
+            .aria_label(label)
+            .size_full()
+            .overflow_hidden()
+            .child(Input::new(&cues).h_full())
+    }
+}
+
+impl Render for LogPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = self.app.read(cx);
+        let show_debug = app.show_debug;
+        let rows: Vec<LogLine> =
+            app.log.iter().rev().filter(|l| show_debug || !l.debug).take(16).cloned().collect();
+        let label: SharedString = format!(
+            "Run log. {}",
+            rows.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
+        )
+        .into();
+        let log_fg = cx.theme().foreground;
+        let log_err = cx.theme().danger;
+        v_flex()
+            .id("log-panel")
+            .role(Role::Group)
+            .aria_label(label)
+            .size_full()
+            .overflow_hidden()
+            .p_1()
+            .text_xs()
+            .font_family(cx.theme().mono_font_family.clone())
+            .children(rows.into_iter().map(move |l| {
+                let color = if l.error { log_err } else { l.run.map(run_color).unwrap_or(log_fg) };
+                let row = div().text_color(color);
+                let row = if l.indent { row.pl_4() } else { row };
+                row.child(l.text)
+            }))
+    }
+}
+
 impl Render for SonicSpike {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Flush queued cues into the (selectable) cues editor; the first real
@@ -2226,7 +2349,6 @@ impl Render for SonicSpike {
         }
 
         let editor = self.buffers[self.active].clone();
-        let (scope_el, scope_live) = self.scope(cx);
 
         let code = editor.read(cx).value();
         let caret = editor.read(cx).cursor();
@@ -2237,23 +2359,6 @@ impl Render for SonicSpike {
             caret
         )
         .into();
-        let cues_label: SharedString = format!("Cues log. {}", self.cues.read(cx).value()).into();
-        let log_label: SharedString = format!(
-            "Run log. {}",
-            self.log.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
-        )
-        .into();
-        let show_debug = self.show_debug;
-        let recent: Vec<LogLine> = self
-            .log
-            .iter()
-            .rev()
-            .filter(|l| show_debug || !l.debug)
-            .take(16)
-            .cloned()
-            .collect();
-        let log_fg = cx.theme().foreground;
-        let log_err = cx.theme().danger;
 
         let selection = editor.read(cx).selected_range();
         let editor_body = v_flex()
@@ -2308,52 +2413,13 @@ impl Render for SonicSpike {
                 cx,
             ));
         }
-        // The permanent panes are a vertical resizable group — drag the
-        // dividers to re-balance scope/cues/log (dock-lite, part two).
-        let core_panes = v_resizable("right-panes")
-            .child(resizable_panel().child(self.pane(
-                "scope",
-                if scope_live { "Scope · live (shm)" } else { "Scope · demo" },
-                Role::Image,
-                "Audio scope waveform",
-                0.0,
-                scope_el,
-                cx,
-            )))
-            .child(resizable_panel().child(self.pane(
-                "cues",
-                self.i18n.tr("Cues"),
-                Role::Group,
-                cues_label,
-                0.0,
-                Input::new(&self.cues).h_full().into_any_element(),
-                cx,
-            )))
-            .child(resizable_panel().child(self.pane(
-                "log",
-                self.i18n.tr("Log"),
-                Role::Group,
-                log_label,
-                0.0,
-                v_flex()
-                    .size_full()
-                    .p_1()
-                    .text_xs()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .children(recent.into_iter().map(move |l| {
-                        let color = if l.error {
-                            log_err
-                        } else {
-                            l.run.map(run_color).unwrap_or(log_fg)
-                        };
-                        let row = div().text_color(color);
-                        let row = if l.indent { row.pl_4() } else { row };
-                        row.child(l.text)
-                    }))
-                    .into_any_element(),
-                cx,
-            )));
-        let right = right.child(div().flex_1().min_h(px(0.)).child(core_panes));
+        // The permanent panes live in the DockArea: resize via dividers,
+        // drag tabs to rearrange/stack (the full dock story).
+        let right = if let Some(dock) = &self.dock {
+            right.child(div().flex_1().min_h(px(0.)).child(dock.clone()))
+        } else {
+            right
+        };
 
         v_flex()
             .id("sonic-spike")
