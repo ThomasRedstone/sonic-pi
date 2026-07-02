@@ -221,17 +221,33 @@ forces it) → loopback. Sonic Oxide now runs 3 processes by default.
 - **Help pane full docs**: lang `doc:` bodies (multiline Ruby strings)
   parsed into `long_doc`; shown under the summary (1200-char cap).
 
+## Done 2026-07-02 (controls a11y)
+
+- **All 11 header controls are now real screen-reader buttons**: labeled
+  AccessKit Button nodes with Click actions routed through a single `Cmd`
+  dispatch shared with mouse handlers. AT-SPI verified: window exposes 15
+  children (11 controls + 4 panes; editor Text interface intact).
+- GOTCHA: the AccessKit adapter can NOT reactivate after
+  ScreenReaderEnabled toggles off in-process — restart the app with the
+  flag already on before a walk. And kill Orca with
+  `pkill -f "usr/bin/orc[a]"` (bracket trick — plain patterns match the
+  harness's own shell and kill it, exit 144).
+- Decision: character_positions/widths for TextRuns stay deferred until we
+  can source real glyph metrics from the editor layout — fabricated
+  positions would actively mislead screen magnifiers.
+
 ## Next priorities
 
 1. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
    collapsible panes cover the fold/unfold half already.
 2. **3c**: piano/slider completion-popup helpers.
-3. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
-   TextRun approach to gpui-component.
-4. **i18n groundwork** (3d): string table + gettext-compatible extraction.
-5. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
-   AppImage target, mac/windows scripts; then retire Qt + app/api per the
-   roadmap exit criteria (needs sustained side-by-side parity sign-off).
+3. **i18n groundwork** (3d): string table + gettext-compatible extraction.
+4. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
+   AppImage target, mac/windows scripts.
+5. **Tier-2 a11y**: real glyph metrics for character_positions (needs
+   editor-layout access — likely the upstream gpui-component conversation).
+6. **Qt retirement** per roadmap exit criteria — after sustained
+   side-by-side parity use, not a single-day call.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
