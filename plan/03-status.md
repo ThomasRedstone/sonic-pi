@@ -211,17 +211,27 @@ supervisor_check asserts daemon-free device pushes (3 received) — PASS.
 Boot chain: supervisor default → daemon.rb fallback (`SONIC_OXIDE_DAEMON=1`
 forces it) → loopback. Sonic Oxide now runs 3 processes by default.
 
+## Done 2026-07-02 (packaging v1 + full docs)
+
+- **Relocatable Linux bundle** (`experiments/package-linux.sh`): release
+  binary + app/server + etc assets → dist/ (190MB, system ruby for now);
+  ends with a relocation smoke test (boot real runtime from a moved dir,
+  verified shutdown) — PASS. App root resolves at runtime
+  (SONIC_OXIDE_APP_ROOT → exe-relative ../app → dev fallback).
+- **Help pane full docs**: lang `doc:` bodies (multiline Ruby strings)
+  parsed into `long_doc`; shown under the summary (1200-char cap).
+
 ## Next priorities
 
 1. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
    collapsible panes cover the fold/unfold half already.
-2. **3c**: piano/slider completion-popup helpers; Help pane → full lang
-   `doc:` bodies (only summaries today).
+2. **3c**: piano/slider completion-popup helpers.
 3. **Tier-2 a11y polish**: `character_positions`/`widths`; upstream the
    TextRun approach to gpui-component.
 4. **i18n groundwork** (3d): string table + gettext-compatible extraction.
-5. **Phase 4 continues**: unified cargo build + per-OS packaging; then
-   retire the Qt GUI + app/api per the roadmap exit criteria.
+5. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
+   AppImage target, mac/windows scripts; then retire Qt + app/api per the
+   roadmap exit criteria (needs sustained side-by-side parity sign-off).
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
