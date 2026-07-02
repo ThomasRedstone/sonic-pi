@@ -53,7 +53,7 @@ use gpui_component::{
     h_flex,
     highlighter::{Diagnostic, DiagnosticSeverity},
     input::{Input, InputState, Position},
-    resizable::{h_resizable, resizable_panel},
+    resizable::{h_resizable, resizable_panel, v_resizable},
     v_flex,
 };
 use gpui_component_assets::Assets;
@@ -1962,11 +1962,13 @@ impl SonicSpike {
     fn a11y_ctl(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: &str,
         cmd: Cmd,
         inner: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Screen-reader label goes through the translation table too.
+        let label = SharedString::from(self.i18n.tr(label).to_string());
         let weak = cx.entity().downgrade();
         div()
             .id(id)
@@ -2295,8 +2297,10 @@ impl Render for SonicSpike {
                 cx,
             ));
         }
-        let right = right
-            .child(self.pane(
+        // The permanent panes are a vertical resizable group — drag the
+        // dividers to re-balance scope/cues/log (dock-lite, part two).
+        let core_panes = v_resizable("right-panes")
+            .child(resizable_panel().child(self.pane(
                 "scope",
                 if scope_live { "Scope · live (shm)" } else { "Scope · demo" },
                 Role::Image,
@@ -2304,8 +2308,8 @@ impl Render for SonicSpike {
                 0.0,
                 scope_el,
                 cx,
-            ))
-            .child(self.pane(
+            )))
+            .child(resizable_panel().child(self.pane(
                 "cues",
                 self.i18n.tr("Cues"),
                 Role::Group,
@@ -2313,8 +2317,8 @@ impl Render for SonicSpike {
                 0.0,
                 Input::new(&self.cues).h_full().into_any_element(),
                 cx,
-            ))
-            .child(self.pane(
+            )))
+            .child(resizable_panel().child(self.pane(
                 "log",
                 self.i18n.tr("Log"),
                 Role::Group,
@@ -2337,7 +2341,8 @@ impl Render for SonicSpike {
                     }))
                     .into_any_element(),
                 cx,
-            ));
+            )));
+        let right = right.child(div().flex_1().min_h(px(0.)).child(core_panes));
 
         v_flex()
             .id("sonic-spike")
