@@ -33,6 +33,8 @@ pub mod addr {
     pub const CLOCK_AUDIO_PUBLISH_SET: &str = "/clock/audio/publish/set";
     pub const CLOCK_PEER_NAME_SET: &str = "/clock/peer_name/set";
     pub const SUPERSONIC_DEVICES_REPORT: &str = "/supersonic/devices/report";
+    pub const SUPERSONIC_RECORD_START: &str = "/supersonic/record/start";
+    pub const SUPERSONIC_RECORD_STOP: &str = "/supersonic/record/stop";
 
     // ── Incoming: Spider/SuperSonic → core (port `gui_listen_to_spider`) ─────
     pub const LOG_MULTI_MESSAGE: &str = "/log/multi_message";
@@ -109,6 +111,25 @@ pub mod out {
     /// `link_api.rb`'s `@link_comms.send("/clock/tempo/set", bpm.to_f)`).
     pub fn clock_tempo_set(bpm: f32) -> OscMessage {
         msg(addr::CLOCK_TEMPO_SET, vec![OscType::Float(bpm)])
+    }
+
+    /// `/supersonic/record/start [path] [format] [depth]` — SuperSonic's
+    /// JUCE-side recorder taps the main output mix (mirrors
+    /// `Studio#recording_start`; Spider sends `path, "wav", 24`).
+    pub fn record_start(path: &str, format: &str, depth: i32) -> OscMessage {
+        msg(
+            addr::SUPERSONIC_RECORD_START,
+            vec![
+                OscType::String(path.to_string()),
+                OscType::String(format.to_string()),
+                OscType::Int(depth),
+            ],
+        )
+    }
+
+    /// `/supersonic/record/stop`.
+    pub fn record_stop() -> OscMessage {
+        msg(addr::SUPERSONIC_RECORD_STOP, vec![])
     }
 
     /// `/daemon/audio/switch-device [token] [output] [sampleRate] [bufferSize]

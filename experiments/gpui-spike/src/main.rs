@@ -594,6 +594,19 @@ impl Backend {
         }
     }
 
+    /// Start/stop SuperSonic's JUCE-side recorder (real backend only).
+    fn record_start(&self, path: &str) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.send_to_supersonic(&protocol::out::record_start(path, "wav", 24));
+        }
+    }
+
+    fn record_stop(&self) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.send_to_supersonic(&protocol::out::record_stop());
+        }
+    }
+
     /// Where this backend's engine publishes its scope shm, if known.
     fn scope_shm_name(&self) -> String {
         match self {
@@ -1017,6 +1030,8 @@ struct SonicSpike {
     settings_open: bool,
     /// Previous tap-tempo press, for the interval → BPM conversion.
     last_tap: Option<std::time::Instant>,
+    /// Path of the in-flight recording, if any.
+    recording: Option<PathBuf>,
     /// Help pane: the loaded vocabulary doubles as the docs index.
     vocab: Rc<Vocab>,
     help_open: bool,
@@ -1187,6 +1202,7 @@ impl SonicSpike {
             in_devices: None,
             settings_open: false,
             last_tap: None,
+            recording: None,
             vocab,
             help_open: false,
             help_query,
@@ -1379,6 +1395,37 @@ impl SonicSpike {
                     .on_click(cx.listener(|this, _, _, cx| this.run_active(cx))),
             )
             .child(stop.on_click(cx.listener(|this, _, _, cx| this.stop_all(cx))))
+            .child({
+                let rec = Button::new("record").label("⏺ Rec");
+                let rec = if self.recording.is_some() { rec.danger() } else { rec.outline() };
+                rec.on_click(cx.listener(|this, _, _, cx| {
+                    match this.recording.take() {
+                        Some(path) => {
+                            this.backend.record_stop();
+                            this.log.push(LogLine::info(format!(
+                                "→ Recording saved: {}",
+                                path.display()
+                            )));
+                        }
+                        None => {
+                            let dir = this.store_dir.join("recordings");
+                            let _ = std::fs::create_dir_all(&dir);
+                            let stamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let path = dir.join(format!("rec-{stamp}.wav"));
+                            this.backend.record_start(&path.to_string_lossy());
+                            this.log.push(LogLine::info(format!(
+                                "→ Recording to {}",
+                                path.display()
+                            )));
+                            this.recording = Some(path);
+                        }
+                    }
+                    cx.notify();
+                }))
+            })
             .child(
                 Button::new("toggle-comment")
                     .label("#")
