@@ -727,6 +727,13 @@ impl Backend {
                     }
                 }
                 Runtime::Rust(sup) => {
+                    // Pre-shutdown liveness lets smoke tests assert the full
+                    // runtime was actually up (a dead Spider would otherwise
+                    // still produce a "clean" shutdown).
+                    let (spider, engine) = sup.children_running();
+                    eprintln!(
+                        "sonic-oxide: runtime at quit — spider alive: {spider}, engine alive: {engine}"
+                    );
                     if sup.shutdown_verified() {
                         eprintln!("sonic-oxide: supervisor children stopped (verified)");
                     } else {

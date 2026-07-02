@@ -28,23 +28,66 @@ mkdir -p "${DIST}/app"
 rsync -a --exclude 'log/' --exclude '*.log' --exclude '.git' \
   "${REPO}/app/server" "${DIST}/app/"
 
-# Assets the frontend reads directly (samples, completion/help sources).
+# Assets: what the frontend reads (samples, completion/help sources, i18n)
+# plus what SPIDER reads at boot (buffers: rand-stream.wav; synthdefs).
 rsync -a "${REPO}/etc/samples" "${DIST}/etc/"
+rsync -a "${REPO}/etc/buffers" "${DIST}/etc/"
+rsync -a "${REPO}/etc/synthdefs" "${DIST}/etc/"
 mkdir -p "${DIST}/etc/doc"
 rsync -a "${REPO}/etc/doc/cheatsheets" "${DIST}/etc/doc/"
+rsync -a "${REPO}/etc/i18n" "${DIST}/etc/" 2>/dev/null || true
 
+# ── Bundle ruby (packaging v2): the interpreter Spider runs on ships in the
+# official layout (server/native/ruby/bin/ruby), which the core prefers over
+# system ruby. A wrapper pins RUBYLIB/GEM_PATH/LD_LIBRARY_PATH to the copies.
+echo "==> bundling ruby ($(ruby -v | cut -d' ' -f1-2))"
+RUBY_REAL="$(ruby -e 'print RbConfig.ruby')"
+RUBYLIBDIR="$(ruby -e 'print RbConfig::CONFIG["rubylibdir"]')"
+ARCHDIR="$(ruby -e 'print RbConfig::CONFIG["rubyarchdir"]')"
+LIBDIR="$(ruby -e 'print RbConfig::CONFIG["libdir"]')"
+GEMDIR="$(ruby -e 'print Gem.default_dir')"
+RB="${DIST}/app/server/native/ruby"
+rm -rf "${RB}"
+mkdir -p "${RB}/bin" "${RB}/lib/ruby/stdlib" "${RB}/lib/ruby/arch" "${RB}/gems"
+cp "${RUBY_REAL}" "${RB}/bin/ruby.real"
+rsync -a "${RUBYLIBDIR}/" "${RB}/lib/ruby/stdlib/"
+rsync -a "${ARCHDIR}/" "${RB}/lib/ruby/arch/"
+cp -a "${LIBDIR}"/libruby.so* "${RB}/lib/" 2>/dev/null || true
+[ -d "${GEMDIR}" ] && rsync -a "${GEMDIR}/" "${RB}/gems/default/"
+
+cat > "${RB}/bin/ruby" <<'RUBYWRAP'
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+RB="$(dirname "${HERE}")"
+export RUBYLIB="${RB}/lib/ruby/stdlib:${RB}/lib/ruby/arch${RUBYLIB:+:$RUBYLIB}"
+export GEM_HOME="${RB}/gems/default"
+export GEM_PATH="${RB}/gems/default"
+export LD_LIBRARY_PATH="${RB}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "${HERE}/ruby.real" "$@"
+RUBYWRAP
+chmod +x "${RB}/bin/ruby"
+
+# The bundled interpreter must at least run and see its stdlib + gems.
+"${RB}/bin/ruby" -e 'require "set"; require "socket"; print "bundled ruby ok: ", RUBY_VERSION' \
+  || { echo "bundled ruby self-check FAILED" >&2; exit 1; }
+echo
+
+cp "${REPO}/VERSION" "${DIST}/"   # Spider reads ../../../../../VERSION at boot
 du -sh "${DIST}"
 
-echo "==> relocation smoke test"
+echo "==> relocation smoke test (bundled ruby, full runtime)"
 SMOKE="$(mktemp -d)/sonic-oxide"
 cp -r "${DIST}" "${SMOKE}"
-if SONIC_SPIKE_AUTOQUIT=15 timeout 90 "${SMOKE}/bin/sonic-oxide" 2>&1 \
-    | grep -q "children stopped (verified)"; then
-  echo "==> SMOKE TEST PASS (booted + verified shutdown from ${SMOKE})"
-  rm -rf "$(dirname "${SMOKE}")"
+OUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${SMOKE}/bin/sonic-oxide" 2>&1 || true)"
+rm -rf "$(dirname "${SMOKE}")"
+# Spider alive at quit proves the BUNDLED interpreter booted the language
+# runtime; verified shutdown proves teardown.
+if echo "${OUT}" | grep -q "spider alive: true, engine alive: true" \
+    && echo "${OUT}" | grep -q "children stopped (verified)"; then
+  echo "==> SMOKE TEST PASS (full runtime up on bundled ruby + verified shutdown)"
 else
-  echo "==> SMOKE TEST FAIL" >&2
-  rm -rf "$(dirname "${SMOKE}")"
+  echo "==> SMOKE TEST FAIL:" >&2
+  echo "${OUT}" | tail -5 >&2
   exit 1
 fi
 
@@ -58,6 +101,7 @@ echo "==> staging ${APPDIR}"
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr"
 cp -r "${DIST}/bin" "${DIST}/app" "${DIST}/etc" "${APPDIR}/usr/"
+cp "${DIST}/VERSION" "${APPDIR}/usr/"
 cp "${REPO}/app/gui/images/icon-smaller.png" "${APPDIR}/sonic-oxide.png"
 
 cat > "${APPDIR}/sonic-oxide.desktop" <<'DESKTOP'
@@ -80,9 +124,10 @@ APPRUN
 chmod +x "${APPDIR}/AppRun"
 
 echo "==> AppDir smoke test"
-if SONIC_SPIKE_AUTOQUIT=15 timeout 90 "${APPDIR}/AppRun" 2>&1 \
-    | grep -q "children stopped (verified)"; then
-  echo "==> APPDIR SMOKE TEST PASS"
+APPOUT="$(SONIC_SPIKE_AUTOQUIT=18 timeout 90 "${APPDIR}/AppRun" 2>&1 || true)"
+if echo "${APPOUT}" | grep -q "spider alive: true, engine alive: true" \
+    && echo "${APPOUT}" | grep -q "children stopped (verified)"; then
+  echo "==> APPDIR SMOKE TEST PASS (full runtime on bundled ruby)"
 else
   echo "==> APPDIR SMOKE TEST FAIL" >&2
   exit 1

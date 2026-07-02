@@ -174,6 +174,17 @@ impl Supervisor {
             | 1;
         let ports = Ports::from_parts(daemon, gui_listen, gui_send, scsynth, osc_cues, token);
 
+        // SONIC_OXIDE_DEBUG_CHILDREN=1 inherits child stdio for debugging
+        // (children are otherwise silenced).
+        let debug_children = std::env::var("SONIC_OXIDE_DEBUG_CHILDREN").as_deref() == Ok("1");
+        let stdio = move || {
+            if debug_children {
+                (Stdio::inherit(), Stdio::inherit())
+            } else {
+                (Stdio::null(), Stdio::null())
+            }
+        };
+
         // SuperSonic first (Spider needs a live engine). User TOML settings
         // append after the defaults, overriding them.
         let mut cmd = Command::new(&supersonic_bin);
@@ -181,7 +192,8 @@ impl Supervisor {
         for (flag, value) in user_audio_settings() {
             cmd.arg(flag).arg(value);
         }
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let (out, err) = stdio();
+        cmd.stdout(out).stderr(err);
         die_with_parent(&mut cmd);
         let supersonic =
             cmd.spawn().map_err(|e| CoreError::Spawn(format!("spawning supersonic: {e}")))?;
@@ -216,7 +228,8 @@ impl Supervisor {
             .arg(scsynth.to_string())
             .arg(osc_cues.to_string())
             .arg(token.to_string());
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let (out, err) = stdio();
+        cmd.stdout(out).stderr(err);
         die_with_parent(&mut cmd);
         let spider = match cmd.spawn() {
             Ok(c) => c,
