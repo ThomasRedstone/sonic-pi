@@ -232,6 +232,45 @@ impl Vocab {
 }
 
 impl Vocab {
+    /// Context-aware opt completion: when the text before the caret
+    /// references a synth/fx symbol we know (`use_synth :tb303`,
+    /// `with_fx :reverb, …` — possibly lines earlier, matching Sonic Pi's
+    /// use_synth-persists semantics), offer that entry's opts (`cutoff:`,
+    /// `mix:`, …) matching `prefix`. The *last* known symbol wins (closest
+    /// context). Returns (insert label like `"cutoff:"`, default value).
+    pub fn opt_completions(
+        &self,
+        text_before_caret: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Vec<(String, String)> {
+        if prefix.starts_with(':') || prefix.is_empty() {
+            return Vec::new();
+        }
+        // Last :symbol before the caret that resolves to an entry with opts.
+        let entry = text_before_caret
+            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .filter(|w| w.starts_with(':') && w.len() > 1 && !w.contains("::"))
+            .filter_map(|w| self.get(w))
+            .filter(|e| !e.opts.is_empty())
+            .next_back();
+        let Some(entry) = entry else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, String)> = entry
+            .opts
+            .iter()
+            .filter_map(|opt| {
+                let (name, default) = opt.split_once(':')?;
+                let name = name.trim();
+                name.starts_with(prefix)
+                    .then(|| (format!("{name}:"), default.trim().to_string()))
+            })
+            .collect();
+        out.truncate(limit);
+        out
+    }
+
     /// Case-insensitive substring search for the Help pane.
     pub fn search(&self, query: &str, limit: usize) -> Vec<&VocabEntry> {
         let q = query.trim().to_lowercase();
@@ -350,6 +389,30 @@ mod tests {
         assert!(vocab.entries.len() > 300, "suspiciously small vocab: {}", vocab.entries.len());
         // fx cheatsheet keys are :fx_* — completion after with_fx types ':'
         assert!(labels.iter().any(|l| l.starts_with(":fx_") || l.starts_with(":reverb")), "fx missing");
+    }
+
+    #[test]
+    fn opt_completions_follow_the_nearest_symbol() {
+        let mut tb303 = VocabEntry::new(":tb303", VocabKind::Synth, "");
+        tb303.opts = vec!["cutoff: 100".into(), "res: 0.9".into(), "amp: 1".into()];
+        let mut reverb = VocabEntry::new(":reverb", VocabKind::Fx, "");
+        reverb.opts = vec!["mix: 0.4".into(), "room: 0.6".into()];
+        let vocab = Vocab {
+            entries: vec![tb303, reverb, VocabEntry::new(":bd_haus", VocabKind::Sample, "")],
+        };
+
+        // Opts of the line's synth, prefix-filtered, with defaults.
+        let hits = vocab.opt_completions("use_synth :tb303\nplay 60, cu", "cu", 10);
+        assert_eq!(hits, vec![("cutoff:".to_string(), "100".to_string())]);
+
+        // Two symbols on the line: the closest (last) one wins.
+        let hits = vocab.opt_completions("with_fx :reverb do :tb303 ", "re", 10);
+        assert_eq!(hits, vec![("res:".to_string(), "0.9".to_string())]);
+
+        // Symbols without opts (samples) contribute nothing.
+        assert!(vocab.opt_completions("sample :bd_haus, am", "am", 10).is_empty());
+        // Symbol prefixes never get opts.
+        assert!(vocab.opt_completions("use_synth :tb303, ", ":cu", 10).is_empty());
     }
 
     #[test]

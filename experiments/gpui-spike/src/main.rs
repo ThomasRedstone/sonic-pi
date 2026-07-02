@@ -365,12 +365,22 @@ impl gpui_component::input::CompletionProvider for SonicCompletions {
         _cx: &mut Context<InputState>,
     ) -> Task<gpui::Result<lsp_types::CompletionResponse>> {
         let text = text.to_string();
-        let (_, prefix) = word_prefix_at(&text, offset);
-        let items: Vec<lsp_types::CompletionItem> = self
+        let (word_start, prefix) = word_prefix_at(&text, offset);
+        // Synth/fx opt names first (context-narrowed), then the vocabulary.
+        let mut items: Vec<lsp_types::CompletionItem> = self
             .0
-            .complete(prefix, 50)
+            .opt_completions(&text[..word_start], prefix, 20)
             .into_iter()
-            .map(|e| lsp_types::CompletionItem {
+            .map(|(label, default)| lsp_types::CompletionItem {
+                label: label.clone(),
+                detail: Some(format!("opt · default {default}")),
+                insert_text: Some(format!("{label} ")),
+                kind: Some(lsp_types::CompletionItemKind::FIELD),
+                ..Default::default()
+            })
+            .collect();
+        items.extend(self.0.complete(prefix, 50).into_iter().map(|e| {
+            lsp_types::CompletionItem {
                 label: e.label.clone(),
                 detail: Some(e.kind.label().to_string()),
                 documentation: (!e.doc.is_empty())
@@ -382,8 +392,8 @@ impl gpui_component::input::CompletionProvider for SonicCompletions {
                     _ => lsp_types::CompletionItemKind::VALUE,
                 }),
                 ..Default::default()
-            })
-            .collect();
+            }
+        }));
         Task::ready(Ok(lsp_types::CompletionResponse::Array(items)))
     }
 
