@@ -1,0 +1,6 @@
+# GPUI (at the pinned rev) targets Rust 1.95.0 — it uses APIs like
+# std::hint::cold_path() that aren't available on older stable toolchains.
+# Upstream Zed pins stable "1.95.0"; we use the locally-installed 1.95 nightly,
+# where those APIs are equally available. Bump to stable "1.95.0" if preferred.
+[toolchain]
+channel = "nightly"

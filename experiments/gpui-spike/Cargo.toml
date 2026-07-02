@@ -1,0 +1,19 @@
+[package]
+name = "sonic-gpui-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# NOTE: GPUI + gpui-component are pre-1.0 and change frequently.
+# These revs are pinned so the graph resolves consistently:
+#   - gpui-component @ main (1505b14) declares gpui @ rev 1d217ee.
+#   - We pin gpui to the SAME rev so cargo unifies them to one package.
+# If a bump breaks the build, re-sync both revs from gpui-component's Cargo.toml.
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+libc = "0.2"
+# The scope shared-memory reader/writer now lives in the Rust core; consume it.
+sonicpi-core = { path = "../rust-core" }
