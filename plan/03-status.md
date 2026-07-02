@@ -110,18 +110,44 @@ Two follow-ups discovered:
 - Gotcha: SIGTERM-killed engines leave stale `/dev/shm/SuperSonic_*` segments
   (no unlink); remove stale ones before probing. Clean quits unlink correctly.
 
-## Next priorities (3a is DONE; onward into 3c/3d)
+## Done 2026-07-02 evening session (all committed; 23 core + 16 spike tests)
 
-1. **3c discoverability**: autocomplete (gpui-component has LSP/completion
-   machinery — investigate what `InputState` exposes), then the completion
-   popup w/ docs, then Help/docs browser rendering the generated doc html.
-2. **3d configuration**: settings surface (audio devices — the events now
-   exist), MIDI config, theme system beyond dark/light, i18n pipeline.
-3. **Tier-2 a11y polish**: `character_positions`/`widths` from the editor's
-   line layout; upstream the TextRun approach to gpui-component; a11y for
-   Log/Cues panes (currently label-only).
-4. **Commit checkpoint**: everything is still uncommitted (experiments/, plan/,
-   the Phase-0 Qt fix). E2E + audible test both pass — good moment to land it.
+- **3c autocomplete**: `CompletionProvider` over a repo-loaded vocabulary
+  (synth/fx cheatsheets, samples dir, 239 lang `doc name:`/`summary:` blocks);
+  `:sym` prefix restricts to symbols. Integration test loads the real repo
+  files (>300 entries).
+- **Keyboard shortcuts** via GPUI actions: Alt+R run, Alt+S stop, Alt+/
+  comment, Alt+M align, Alt+[/] buffer prev/next.
+- **10 buffers + workspace persistence**: `~/.sonic-pi/store/streamlined/
+  buffer_N.spi`, load-on-boot / autosave 5s / save-on-quit. E2E-verified
+  (marker survives a full boot→quit lifecycle; AUTOQUIT run writes all 10).
+- **3d settings pane** (⚙): output/input device pickers from the engine's
+  device pushes; switching sends `/daemon/audio/switch-device` (wire format
+  mirrored from `MainWindow::sendDeviceSwitch`, unit-tested).
+- **3b**: FFT **spectrum analyser** scope mode (rust-core `SpectrumProcessor`,
+  exact C++ AudioProcessor constants/ballistics, rustfft; sine-bucket/silence/
+  ballistics tests) + **Link tempo controls** (−5/+5, tap tempo →
+  `/clock/tempo/set`) + live engine metrics strip.
+- **3c Help pane** (?): ranked substring search over the vocabulary; entry
+  view shows summary + synth/fx opts from the cheatsheets.
+- Env gotcha: `pkill -f <pattern>` matches the harness's own bash wrapper
+  (the command text embeds the pattern) and kills the shell — use
+  `pkill -x sonic-gpui-spik` (comm name, 15-char truncated).
+
+## Next priorities
+
+1. **Phase-0 closeout (BLOCKED on sudo)**: Qt build needs
+   `sudo apt install libaubio-dev libqscintilla2-qt6-dev qt6-base-dev
+   qt6-tools-dev qt6-svg-dev libqt6opengl6-dev` — then
+   `cd app && ./linux-config.sh && ./linux-build-gui.sh` and smoke-test
+   the Log/Cues Copy All context menu.
+2. **3c completion popup polish**: opt-name completion after a synth/fx
+   symbol (cheatsheet opts are already in the vocab), piano/slider helpers.
+3. **3e long tail**: recording (WAV via hound), node-tree viz, OSC/debug
+   panel; dock system instead of fixed splits.
+4. **Tier-2 a11y polish**: `character_positions`/`widths`, a11y for the new
+   Help/Settings panes, upstream the TextRun approach to gpui-component.
+5. **Phase 4 prep**: fold daemon supervision into the core; unified build.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
