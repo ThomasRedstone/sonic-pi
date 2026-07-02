@@ -165,6 +165,14 @@ fn osc(addr: &str, args: Vec<OscType>) -> OscMessage {
     OscMessage { addr: addr.to_string(), args }
 }
 
+/// Parse Spider's rational cue timestamp (`"num/den"`, in seconds) to f64.
+fn parse_cue_time(t: &str) -> Option<f64> {
+    let (n, d) = t.split_once('/')?;
+    let n: f64 = n.trim().parse().ok()?;
+    let d: f64 = d.trim().parse().ok()?;
+    (d != 0.0).then(|| n / d)
+}
+
 /// Toggle `# ` comments on the lines covered by `sel` (or the cursor's line).
 /// Returns the new buffer text, or None if nothing changes. Pure → unit-tested.
 fn toggle_comment(text: &str, sel: std::ops::Range<usize>) -> Option<String> {
@@ -305,7 +313,16 @@ mod tests {
         assert_eq!(out, "  play 60");
     }
 
-    use super::{byte_to_text_position, line_runs, word_starts};
+    use super::{byte_to_text_position, line_runs, parse_cue_time, word_starts};
+
+    #[test]
+    fn parses_rational_cue_timestamps() {
+        assert_eq!(parse_cue_time("1783000703/1000"), Some(1_783_000.703));
+        assert_eq!(parse_cue_time("3/2"), Some(1.5));
+        assert_eq!(parse_cue_time("nonsense"), None);
+        assert_eq!(parse_cue_time("1/0"), None);
+        assert_eq!(parse_cue_time(""), None);
+    }
 
     #[test]
     fn line_runs_cover_the_text_and_count_characters() {
@@ -1043,6 +1060,8 @@ struct SonicSpike {
     pending_cues: Vec<String>,
     /// False until the first real cue replaces the placeholder text.
     cues_live: bool,
+    /// First cue's absolute time — later cues display relative to it.
+    first_cue_at: Option<f64>,
     /// AccessKit NodeIds of the editor's text-run children, recorded during
     /// prepaint and consumed (one frame later) for the a11y caret/selection.
     editor_run_ids: Rc<RefCell<Vec<accesskit::NodeId>>>,
@@ -1119,10 +1138,17 @@ impl SonicSpike {
                             std::mem::take(&mut *this.incoming.lock().unwrap());
                         for ev in &events {
                             this.log.extend(log_lines_for(ev));
-                            // Live cues → the Cues pane (flushed on render).
+                            // Live cues → the Cues pane (flushed on render),
+                            // timestamped relative to the first cue.
                             if let ClientEvent::Cue(c) = ev {
+                                let stamp = parse_cue_time(&c.time)
+                                    .map(|t| {
+                                        let base = *this.first_cue_at.get_or_insert(t);
+                                        format!("+{:.3}s", t - base)
+                                    })
+                                    .unwrap_or_else(|| c.time.clone());
                                 this.pending_cues
-                                    .push(format!("{}  {}  {}", c.time, c.address, c.args));
+                                    .push(format!("{stamp}  {}  {}", c.address, c.args));
                             }
                             // Spider says every run has finished → not playing.
                             if let ClientEvent::Status(s) = ev {
@@ -1210,6 +1236,7 @@ impl SonicSpike {
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
+            first_cue_at: None,
             editor_run_ids: Rc::new(RefCell::new(Vec::new())),
         }
     }
@@ -1377,7 +1404,14 @@ impl SonicSpike {
             .p_2()
             .gap_2()
             .bg(cx.theme().title_bar)
-            .child(div().flex_1().child("Sonic Oxide"))
+            // Title doubles as the drag handle (no server-side decorations
+            // on GNOME Wayland — we ARE the titlebar).
+            .child(
+                div()
+                    .flex_1()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+                    .child("Sonic Oxide"),
+            )
             .child(
                 div()
                     .text_xs()
@@ -1481,6 +1515,26 @@ impl SonicSpike {
                     cx.notify();
                 },
             )))
+            // Window controls: GNOME Wayland gives us no server-side
+            // decorations, so minimise/maximise/close live here. Close goes
+            // through remove_window → on_window_closed → the clean-shutdown
+            // quit path.
+            .child(div().w_4())
+            .child(
+                Button::new("win-min")
+                    .label("–")
+                    .on_click(|_, window, _| window.minimize_window()),
+            )
+            .child(
+                Button::new("win-max")
+                    .label("□")
+                    .on_click(|_, window, _| window.zoom_window()),
+            )
+            .child(
+                Button::new("win-close")
+                    .label("✕")
+                    .on_click(|_, window, _| window.remove_window()),
+            )
     }
 
     /// Help pane: search the vocabulary, click an entry, read its docs
@@ -1569,9 +1623,10 @@ impl SonicSpike {
 
     /// Settings pane: audio output/input pickers driven by the engine's own
     /// device pushes (`/supersonic/devices` + `/supersonic/input-devices`),
-    /// Link tempo controls, and a live engine-metrics strip.
+    /// Link tempo controls, and a live engine-metrics strip. Scrolls — device
+    /// lists can be long.
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut pane = v_flex().gap_2().p_2().text_sm();
+        let mut pane = v_flex().id("settings-scroll").gap_2().p_2().text_sm().size_full();
 
         // Link tempo row.
         let bpm = self.metrics.as_ref().and_then(|m| m.link_bpm());
@@ -1669,7 +1724,8 @@ impl SonicSpike {
             }
         }
 
-        pane.into_any_element()
+        // Scroll within the pane instead of overflowing it.
+        pane.overflow_y_scroll().into_any_element()
     }
 
     fn tab_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1711,7 +1767,9 @@ impl SonicSpike {
                     .text_xs()
                     .child(title.to_string()),
             )
-            .child(child)
+            // Clip the body: an overflowing pane must never paint over its
+            // siblings (a long device list once bled across three panes).
+            .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(child))
     }
 
     /// Spectrum analyser bars + peak-hold markers from the latest FFT frame.

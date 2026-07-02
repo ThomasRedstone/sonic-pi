@@ -209,11 +209,13 @@ pub fn parse_incoming(m: &OscMessage) -> Option<ClientEvent> {
         addr::ERROR => Some(E::Report(parse_error(m, MessageType::RuntimeError))),
         addr::SYNTAX_ERROR => Some(E::Report(parse_error(m, MessageType::SyntaxError))),
         addr::LOG_MULTI_MESSAGE => Some(E::Report(parse_multi(m))),
+        // `/incoming/osc [time(str), id(i32), address(str), args(str)]` —
+        // order mirrored from osc_handler.cpp.
         addr::INCOMING_OSC => Some(E::Cue(CueInfo {
-            time: String::new(),
-            address: arg_str(m, 0).unwrap_or_default(),
+            time: arg_str(m, 0).unwrap_or_default(),
             id: arg_i32(m, 1).unwrap_or(0),
-            args: arg_str(m, 2).unwrap_or_default(),
+            address: arg_str(m, 2).unwrap_or_default(),
+            args: arg_str(m, 3).unwrap_or_default(),
             index: 0,
         })),
         addr::VERSION => Some(E::Version(VersionInfo {
@@ -372,6 +374,29 @@ mod tests {
                 assert_eq!(info.multi[1].style, 1);
             }
             other => panic!("expected multi Report, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_incoming_osc_cue_in_wire_order() {
+        // time, id, address, args — as osc_handler.cpp pops them.
+        let m = OscMessage {
+            addr: addr::INCOMING_OSC.into(),
+            args: vec![
+                OscType::String("1783000703/1000".into()),
+                OscType::Int(4),
+                OscType::String("/link/tempo-change".into()),
+                OscType::String("[120.0]".into()),
+            ],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::Cue(c)) => {
+                assert_eq!(c.time, "1783000703/1000");
+                assert_eq!(c.id, 4);
+                assert_eq!(c.address, "/link/tempo-change");
+                assert_eq!(c.args, "[120.0]");
+            }
+            other => panic!("expected Cue, got {other:?}"),
         }
     }
 
