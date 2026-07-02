@@ -279,14 +279,18 @@ project's GitHub releases. i18n sweep complete for interactive UI text.
 
 ## Remaining tail (all scoped, none blocking a usable release)
 
-1. **DockArea drag-to-rearrange** — the one big local refactor left:
-   every pane becomes an Entity implementing gpui-component's Panel
-   trait, render state moves out of SonicSpike into per-pane views.
-   Deserves a dedicated session; fold + resize already cover daily use.
+1. **DockArea drag-to-rearrange** — DEFERRED DELIBERATELY (2026-07-02):
+   Panel trait requires every pane to become an EventEmitter+Focusable
+   Entity view — a rearchitecture of main.rs around per-pane views with
+   shared models. High regression risk against a working, user-verified
+   app; per the plan's "keep it shippable" rule it gets a dedicated
+   session. Fold (click) + resize (drag dividers) already cover daily use.
 2. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
    editor a11y glyph metrics — PRs/issues, external cadence.
 3. **i18n**: .po migration + more locales (mechanism + de demo done).
-4. **Packaging v3**: mac/windows scripts, CI artifact upload.
+4. **Packaging**: mac/windows scripts (need those machines). CI artifact
+   upload DONE — every push builds the AppImage (SKIP_SMOKE: runners
+   have no display/audio; boot smokes remain dev-machine checks).
 5. **Qt retirement** per roadmap exit criteria — REQUIRES sustained
    side-by-side daily use (weeks). The code work to enable that
    comparison is done: both apps run, same features exercised.
