@@ -1068,6 +1068,8 @@ struct SonicSpike {
     node_version: u32,
     /// Show engine-internals rows in the Log (unmodelled OSC etc.).
     show_debug: bool,
+    /// Collapsed panes (by pane id) — click a pane's title bar to fold it.
+    collapsed: std::collections::HashSet<&'static str>,
     /// Latest real waveform window (kept between publishes so the scope
     /// doesn't blank when the engine is silent).
     scope_samples: Vec<f32>,
@@ -1268,6 +1270,7 @@ impl SonicSpike {
             node_rows: Vec::new(),
             node_version: 0,
             show_debug: false,
+            collapsed: std::collections::HashSet::new(),
             scope_samples: Vec::new(),
             show_spectrum: false,
             spectrum_rolling: Vec::new(),
@@ -1864,7 +1867,8 @@ impl SonicSpike {
     }
 
     /// Titled pane with accessibility wiring (id/role/label). `flash` drives
-    /// the run-flash border highlight (editor only).
+    /// the run-flash border highlight (editor only). Clicking the title bar
+    /// collapses/expands the pane (dock-lite; the full DockArea comes later).
     fn pane(
         &self,
         id: &'static str,
@@ -1873,15 +1877,16 @@ impl SonicSpike {
         a11y_label: impl Into<SharedString>,
         flash: f32,
         child: impl IntoElement,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let border = if flash > 0.0 { cx.theme().primary } else { cx.theme().border };
-        v_flex()
+        let collapsed = self.collapsed.contains(id);
+        let marker = if collapsed { "▸" } else { "▾" };
+        let root = v_flex()
             .id(id)
             .role(role)
             .aria_label(a11y_label)
-            .flex_1()
-            .min_h(px(60.))
+            .min_h(px(24.))
             // Long content must shrink with the pane, not widen the layout
             // past the window (which pushed the titlebar controls off the
             // right edge on small windows).
@@ -1895,11 +1900,28 @@ impl SonicSpike {
                     .py_1()
                     .bg(cx.theme().secondary)
                     .text_xs()
-                    .child(title.to_string()),
-            )
-            // Clip the body: an overflowing pane must never paint over its
-            // siblings (a long device list once bled across three panes).
-            .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(child))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if !this.collapsed.remove(id) {
+                                this.collapsed.insert(id);
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(format!("{marker} {title}")),
+            );
+        if collapsed {
+            // Header only: no flex growth, body dropped entirely.
+            root
+        } else {
+            root
+                .flex_1()
+                // Clip the body: an overflowing pane must never paint over
+                // its siblings (a long device list once bled across three).
+                .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(child))
+        }
     }
 
     /// Spectrum analyser bars + peak-hold markers from the latest FFT frame.
