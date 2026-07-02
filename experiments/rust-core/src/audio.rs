@@ -14,8 +14,8 @@ pub mod shm;
 pub mod spectrum;
 
 pub use shm::{
-    metrics_idx, MetricsReader, ScopeReader, ScopeSlotReader, ScopeWriter, SCOPE_SHM_NAME,
-    SHM_AUDIO_CHANNELS, SHM_AUDIO_FRAMES, SHM_AUDIO_SAMPLE_RATE,
+    metrics_idx, MetricsReader, NodeInfo, NodeTreeReader, ScopeReader, ScopeSlotReader,
+    ScopeWriter, SCOPE_SHM_NAME, SHM_AUDIO_CHANNELS, SHM_AUDIO_FRAMES, SHM_AUDIO_SAMPLE_RATE,
 };
 pub use spectrum::{SpectrumFrame, SpectrumProcessor};
 

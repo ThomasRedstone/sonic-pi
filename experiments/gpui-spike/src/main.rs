@@ -41,8 +41,8 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use sonicpi_core::audio::{
-    metrics_idx, spectrum, MetricsReader, ScopeReader, ScopeSlotReader, SpectrumFrame,
-    SpectrumProcessor, SCOPE_SHM_NAME,
+    metrics_idx, spectrum, MetricsReader, NodeInfo, NodeTreeReader, ScopeReader, ScopeSlotReader,
+    SpectrumFrame, SpectrumProcessor, SCOPE_SHM_NAME,
 };
 use sonicpi_core::osc::{OscServer, UdpOscSender};
 use sonicpi_core::paths::{resolve, SonicPiPath};
@@ -1013,6 +1013,11 @@ struct SonicSpike {
     scope: ScopeSource,
     /// Engine metrics (BPM, Link peers, …) from the same shm segment.
     metrics: Option<MetricsReader>,
+    /// Live synth/group tree from the engine's shm mirror.
+    node_tree: Option<NodeTreeReader>,
+    nodes_open: bool,
+    node_rows: Vec<NodeInfo>,
+    node_version: u32,
     /// Latest real waveform window (kept between publishes so the scope
     /// doesn't blank when the engine is silent).
     scope_samples: Vec<f32>,
@@ -1208,6 +1213,10 @@ impl SonicSpike {
             cues,
             scope: ScopeSource::Detached,
             metrics: None,
+            node_tree: None,
+            nodes_open: false,
+            node_rows: Vec::new(),
+            node_version: 0,
             scope_samples: Vec::new(),
             show_spectrum: false,
             spectrum_rolling: Vec::new(),
@@ -1262,8 +1271,9 @@ impl SonicSpike {
                             self.log.push(LogLine::info(format!(
                                 "=> Scope attached to {name} (slot 0)"
                             )));
-                            // Same segment, same moment: metrics come along.
+                            // Same segment, same moment: metrics + node tree.
                             self.metrics = MetricsReader::open(&name).ok();
+                            self.node_tree = NodeTreeReader::open(&name).ok();
                             ScopeSource::RealSlot(r)
                         }
                         Err(_) => ScopeSource::Detached,
@@ -1286,6 +1296,16 @@ impl SonicSpike {
                     self.scope_samples = buf;
                     self.scope_live = true;
                     self.feed_spectrum();
+                }
+            }
+        }
+        // Refresh the node list only when the engine bumps its version.
+        if self.nodes_open {
+            if let Some(tree) = &self.node_tree {
+                let v = tree.version();
+                if v != self.node_version {
+                    self.node_version = v;
+                    self.node_rows = tree.read_nodes();
                 }
             }
         }
@@ -1515,6 +1535,13 @@ impl SonicSpike {
                     cx.notify();
                 },
             )))
+            .child(Button::new("nodes-toggle").label("♪").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.nodes_open = !this.nodes_open;
+                    this.node_version = 0; // force a refresh on open
+                    cx.notify();
+                },
+            )))
             // Window controls: GNOME Wayland gives us no server-side
             // decorations, so minimise/maximise/close live here. Close goes
             // through remove_window → on_window_closed → the clean-shutdown
@@ -1728,6 +1755,44 @@ impl SonicSpike {
         pane.overflow_y_scroll().into_any_element()
     }
 
+    /// Live node tree: groups and synths from the engine's shm mirror,
+    /// indented by parent depth.
+    fn nodes(&self, cx: &Context<Self>) -> AnyElement {
+        if self.node_tree.is_none() {
+            return div().p_2().text_xs().child("Node tree: waiting for the engine…").into_any_element();
+        }
+        let parents: std::collections::HashMap<i32, i32> =
+            self.node_rows.iter().map(|n| (n.id, n.parent_id)).collect();
+        let depth = |mut id: i32| {
+            let mut d = 0;
+            while d < 8 {
+                match parents.get(&id) {
+                    Some(&p) if p >= 0 => {
+                        id = p;
+                        d += 1;
+                    }
+                    _ => break,
+                }
+            }
+            d
+        };
+        let muted = cx.theme().muted_foreground;
+        let fg = cx.theme().foreground;
+        v_flex()
+            .p_2()
+            .text_xs()
+            .font_family(cx.theme().mono_font_family.clone())
+            .child(div().text_color(muted).child(format!("{} node(s)", self.node_rows.len())))
+            .children(self.node_rows.iter().map(|n| {
+                let pad = "  ".repeat(depth(n.id));
+                let (icon, color) = if n.is_group { ("▸", muted) } else { ("♪", fg) };
+                div()
+                    .text_color(color)
+                    .child(format!("{pad}{icon} {} [{}]", n.name, n.id))
+            }))
+            .into_any_element()
+    }
+
     fn tab_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active;
         h_flex().gap_1().p_1().children((0..self.buffers.len()).map(move |i| {
@@ -1938,7 +2003,19 @@ impl Render for SonicSpike {
 
         let settings_el = self.settings_open.then(|| self.settings(cx));
         let help_el = self.help_open.then(|| self.help(cx));
+        let nodes_el = self.nodes_open.then(|| self.nodes(cx));
         let mut right = v_flex().size_full().gap_2().p_2();
+        if let Some(el) = nodes_el {
+            right = right.child(self.pane(
+                "nodes",
+                "Nodes",
+                Role::Group,
+                "Live synth node tree",
+                0.0,
+                el,
+                cx,
+            ));
+        }
         if let Some(el) = help_el {
             right = right.child(self.pane(
                 "help",

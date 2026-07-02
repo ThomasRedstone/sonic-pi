@@ -621,6 +621,92 @@ impl MetricsReader {
     }
 }
 
+// ── Node-tree reader ──────────────────────────────────────────────────────────
+//
+// Mirrors `NodeTreeHeader` + `NodeEntry` from shared_memory.h: 16-byte header
+// {node_count, version, dropped_count (atomic u32), pad}, then
+// `node_tree_max_nodes` entries of `node_tree_entry_bytes` (72) bytes:
+// 6×i32 {id, parent, is_group, prev, next, head}, 32-byte NUL-padded
+// def_name, 2×u64 uuid. `id == -1` marks an empty slot.
+
+/// One live node in the engine's mirror tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeInfo {
+    pub id: i32,
+    pub parent_id: i32,
+    pub is_group: bool,
+    /// Synthdef name for synths, "group" for groups.
+    pub name: String,
+}
+
+pub struct NodeTreeReader {
+    _map: Mapping,
+    header: *mut u8,
+    entries: *mut u8,
+    entry_bytes: usize,
+    max_nodes: usize,
+}
+
+impl NodeTreeReader {
+    pub fn open(name: &str) -> io::Result<NodeTreeReader> {
+        let map = Mapping::open(name)?;
+        let base = map.ptr;
+        unsafe {
+            let magic = (base as *const AtomicU32).as_ref().unwrap().load(Ordering::Acquire);
+            if magic != SEGMENT_MAGIC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "bad shm magic — is the engine running?",
+                ));
+            }
+            fence(Ordering::Acquire);
+            let h = base as *const ShmSegmentHeader;
+            let entry_bytes = (*h).node_tree_entry_bytes as usize;
+            let max_nodes = (*h).node_tree_max_nodes as usize;
+            let header_bytes = (*h).node_tree_header_bytes as usize;
+            let off = (*h).blob_offset as usize + (*h).node_tree_offset as usize;
+            if entry_bytes < 56 || max_nodes == 0 || off + header_bytes + max_nodes * entry_bytes > map.size
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "no node-tree region"));
+            }
+            let header = base.add(off);
+            let entries = header.add(header_bytes);
+            Ok(NodeTreeReader { _map: map, header, entries, entry_bytes, max_nodes })
+        }
+    }
+
+    pub fn version(&self) -> u32 {
+        unsafe { (*(self.header.add(4) as *const AtomicU32)).load(Ordering::Acquire) }
+    }
+
+    pub fn node_count(&self) -> u32 {
+        unsafe { (*(self.header as *const AtomicU32)).load(Ordering::Acquire) }
+    }
+
+    /// Snapshot the live nodes (empty slots skipped). Best-effort: a write
+    /// racing the scan can tear a row — fine for a display, and `version()`
+    /// lets callers re-read when it moved.
+    pub fn read_nodes(&self) -> Vec<NodeInfo> {
+        let mut out = Vec::new();
+        unsafe {
+            for i in 0..self.max_nodes {
+                let e = self.entries.add(i * self.entry_bytes);
+                let id = (e as *const i32).read_volatile();
+                if id == -1 {
+                    continue;
+                }
+                let parent_id = (e.add(4) as *const i32).read_volatile();
+                let is_group = (e.add(8) as *const i32).read_volatile() != 0;
+                let name_bytes = std::slice::from_raw_parts(e.add(24), 32);
+                let len = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
+                let name = String::from_utf8_lossy(&name_bytes[..len]).into_owned();
+                out.push(NodeInfo { id, parent_id, is_group, name });
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +833,59 @@ mod tests {
 
         // Slot 1 doesn't exist; opening it must fail cleanly.
         assert!(ScopeSlotReader::open(name, 1).is_err());
+    }
+
+    #[test]
+    fn node_tree_reader_lists_live_nodes() {
+        let name = "/sonic_nodetree_test";
+        let entry_bytes = 72usize;
+        let header_bytes = 16usize;
+        let max_nodes = 8usize;
+        let tree_off = 256u32;
+        let size =
+            BLOB_OFFSET as usize + tree_off as usize + header_bytes + max_nodes * entry_bytes;
+
+        let map = Mapping::create(name, size).unwrap();
+        unsafe {
+            let h = map.ptr as *mut ShmSegmentHeader;
+            (*h).blob_offset = BLOB_OFFSET;
+            (*h).node_tree_offset = tree_off;
+            (*h).node_tree_header_bytes = header_bytes as u32;
+            (*h).node_tree_entry_bytes = entry_bytes as u32;
+            (*h).node_tree_max_nodes = max_nodes as u32;
+
+            let tree = map.ptr.add(BLOB_OFFSET as usize + tree_off as usize);
+            (*(tree as *mut AtomicU32)).store(2, Ordering::Relaxed); // node_count
+            (*(tree.add(4) as *mut AtomicU32)).store(7, Ordering::Relaxed); // version
+            let entries = tree.add(header_bytes);
+            // All slots empty (id = -1)…
+            for i in 0..max_nodes {
+                (entries.add(i * entry_bytes) as *mut i32).write(-1);
+            }
+            // …except a group and a synth.
+            let e0 = entries;
+            (e0 as *mut i32).write(0); // id
+            (e0.add(4) as *mut i32).write(-1); // parent: root
+            (e0.add(8) as *mut i32).write(1); // is_group
+            e0.add(24).copy_from(b"group\0".as_ptr(), 6);
+            let e1 = entries.add(3 * entry_bytes); // sparse slot
+            (e1 as *mut i32).write(1001);
+            (e1.add(4) as *mut i32).write(0);
+            (e1.add(8) as *mut i32).write(0);
+            e1.add(24).copy_from(b"sonic-pi-beep\0".as_ptr(), 14);
+
+            (*(map.ptr as *mut AtomicU32)).store(SEGMENT_MAGIC, Ordering::Release);
+        }
+
+        let r = NodeTreeReader::open(name).unwrap();
+        assert_eq!(r.node_count(), 2);
+        assert_eq!(r.version(), 7);
+        let nodes = r.read_nodes();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes[0].is_group && nodes[0].name == "group" && nodes[0].parent_id == -1);
+        assert_eq!(nodes[1].name, "sonic-pi-beep");
+        assert_eq!(nodes[1].parent_id, 0);
+        assert!(!nodes[1].is_group);
     }
 
     #[test]
