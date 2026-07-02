@@ -120,6 +120,24 @@ impl Session {
         self.daemon.send(&protocol::out::daemon_exit(self.token))
     }
 
+    /// Switch audio devices (`/daemon/audio/switch-device`). Empty strings /
+    /// zeros leave that aspect unchanged; input `"__none__"` disables inputs.
+    pub fn switch_audio_device(
+        &self,
+        output: &str,
+        sample_rate: f32,
+        buffer_size: i32,
+        input: &str,
+    ) -> Result<(), CoreError> {
+        self.daemon.send(&protocol::out::audio_switch_device(
+            self.token,
+            output,
+            sample_rate,
+            buffer_size,
+            input,
+        ))
+    }
+
     pub fn token(&self) -> i32 {
         self.token
     }

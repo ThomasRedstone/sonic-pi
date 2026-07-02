@@ -25,6 +25,7 @@ pub mod addr {
     // ── Outgoing: core → Boot daemon (port `daemon`) ─────────────────────────
     pub const DAEMON_KEEP_ALIVE: &str = "/daemon/keep-alive";
     pub const DAEMON_EXIT: &str = "/daemon/exit";
+    pub const DAEMON_AUDIO_SWITCH_DEVICE: &str = "/daemon/audio/switch-device";
 
     // ── Outgoing: core → SuperSonic (port `scsynth`) ─────────────────────────
     pub const CLOCK_TEMPO_SET: &str = "/clock/tempo/set";
@@ -102,6 +103,29 @@ pub mod out {
     /// `/set-global-timewarp [token] [time]`.
     pub fn set_global_timewarp(token: i32, time: f64) -> OscMessage {
         msg(addr::SET_GLOBAL_TIMEWARP, vec![OscType::Int(token), OscType::Double(time)])
+    }
+
+    /// `/daemon/audio/switch-device [token] [output] [sampleRate] [bufferSize]
+    /// [input]` — sent to the daemon (mirrors `MainWindow::sendDeviceSwitch`).
+    /// Empty strings / zeros mean "leave unchanged"; input `"__none__"`
+    /// disables audio inputs.
+    pub fn audio_switch_device(
+        token: i32,
+        output: &str,
+        sample_rate: f32,
+        buffer_size: i32,
+        input: &str,
+    ) -> OscMessage {
+        msg(
+            addr::DAEMON_AUDIO_SWITCH_DEVICE,
+            vec![
+                OscType::Int(token),
+                OscType::String(output.to_string()),
+                OscType::Float(sample_rate),
+                OscType::Int(buffer_size),
+                OscType::String(input.to_string()),
+            ],
+        )
     }
 }
 
@@ -322,6 +346,19 @@ mod tests {
             }
             other => panic!("expected multi Report, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn audio_switch_device_matches_the_qt_wire_format() {
+        // Mirrors MainWindow::sendDeviceSwitch: token, output, sr(f32),
+        // buf(i32), input.
+        let m = out::audio_switch_device(42, "Built-in", 48000.0, 1024, "__none__");
+        assert_eq!(m.addr, addr::DAEMON_AUDIO_SWITCH_DEVICE);
+        assert!(matches!(m.args[0], OscType::Int(42)));
+        assert!(matches!(&m.args[1], OscType::String(s) if s == "Built-in"));
+        assert!(matches!(m.args[2], OscType::Float(f) if f == 48000.0));
+        assert!(matches!(m.args[3], OscType::Int(1024)));
+        assert!(matches!(&m.args[4], OscType::String(s) if s == "__none__"));
     }
 
     #[test]

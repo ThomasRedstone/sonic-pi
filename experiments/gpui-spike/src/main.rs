@@ -48,7 +48,9 @@ use sonicpi_core::paths::{resolve, SonicPiPath};
 use sonicpi_core::ports::PortId;
 use sonicpi_core::process::Daemon;
 use sonicpi_core::rosc::{OscMessage, OscType};
-use sonicpi_core::{protocol, ApiClient, ClientEvent, Session, StatusType};
+use sonicpi_core::{
+    protocol, ApiClient, AudioDevicesInfo, AudioInputDevicesInfo, ClientEvent, Session, StatusType,
+};
 
 const BUFFER_SEEDS: [&str; 3] = [
     r#"# Buffer 1 — drums
@@ -565,6 +567,15 @@ impl Backend {
     /// Polite shutdown of the real runtime: `/daemon/exit`, then give the
     /// daemon a moment to bring Spider/SuperSonic down before the kill
     /// backstop. Blocks (bounded) — called from the app-quit hook.
+    /// Switch audio devices (real backend only). `None` leaves that side
+    /// unchanged; `Some("__none__")` for input disables audio inputs.
+    fn switch_audio(&self, output: Option<&str>, input: Option<&str>) {
+        if let Backend::Real { session, .. } = self {
+            let _ =
+                session.switch_audio_device(output.unwrap_or(""), 0.0, 0, input.unwrap_or(""));
+        }
+    }
+
     /// Where this backend's engine publishes its scope shm, if known.
     fn scope_shm_name(&self) -> String {
         match self {
@@ -976,6 +987,10 @@ struct SonicSpike {
     /// Workspace persistence: where buffers autosave, and the tick countdown.
     store_dir: PathBuf,
     autosave_in: u32,
+    /// Latest device lists pushed by the engine; feed the settings pane.
+    out_devices: Option<AudioDevicesInfo>,
+    in_devices: Option<AudioInputDevicesInfo>,
+    settings_open: bool,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -1067,6 +1082,16 @@ impl SonicSpike {
                                     this.playing = false;
                                 }
                             }
+                            // Device pushes → the settings pane.
+                            match ev {
+                                ClientEvent::AudioDevices(d) => {
+                                    this.out_devices = Some(d.clone());
+                                }
+                                ClientEvent::AudioInputDevices(d) => {
+                                    this.in_devices = Some(d.clone());
+                                }
+                                _ => {}
+                            }
                             // Error reports with a line number → editor diagnostic
                             // (red underline on that line in the active buffer).
                             if let ClientEvent::Report(m) = ev {
@@ -1121,6 +1146,9 @@ impl SonicSpike {
             incoming,
             store_dir,
             autosave_in: AUTOSAVE_TICKS,
+            out_devices: None,
+            in_devices: None,
+            settings_open: false,
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -1322,6 +1350,74 @@ impl SonicSpike {
                         cx.notify();
                     })),
             )
+            .child(
+                Button::new("settings-toggle").label("⚙").on_click(cx.listener(|this, _, _, cx| {
+                    this.settings_open = !this.settings_open;
+                    cx.notify();
+                })),
+            )
+    }
+
+    /// Settings pane: audio output/input pickers driven by the engine's own
+    /// device pushes (`/supersonic/devices` + `/supersonic/input-devices`).
+    fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut pane = v_flex().gap_2().p_2().text_sm();
+
+        match &self.out_devices {
+            Some(d) => {
+                pane = pane.child(div().text_xs().child(format!(
+                    "Output ({} @ {}Hz)",
+                    d.mode, d.sample_rate
+                )));
+                let current = d.current_device.clone();
+                for (i, name) in d.devices.iter().enumerate() {
+                    let btn = Button::new(("out-dev", i)).xsmall().label(name.clone());
+                    let btn = if *name == current { btn.primary() } else { btn.outline() };
+                    let name = name.clone();
+                    pane = pane.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                        this.backend.switch_audio(Some(&name), None);
+                        this.log.push(LogLine::info(format!("→ Output device → {name}")));
+                        cx.notify();
+                    })));
+                }
+            }
+            None => {
+                pane = pane
+                    .child(div().text_xs().child("Output devices: waiting for the engine…"));
+            }
+        }
+
+        match &self.in_devices {
+            Some(d) => {
+                pane = pane.child(div().text_xs().child("Input"));
+                let current = d.current_device.clone();
+                for (i, name) in d.devices.iter().enumerate() {
+                    let btn = Button::new(("in-dev", i)).xsmall().label(name.clone());
+                    let btn = if *name == current { btn.primary() } else { btn.outline() };
+                    let name = name.clone();
+                    pane = pane.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                        this.backend.switch_audio(None, Some(&name));
+                        this.log.push(LogLine::info(format!("→ Input device → {name}")));
+                        cx.notify();
+                    })));
+                }
+                pane = pane.child(
+                    Button::new("in-dev-none").xsmall().outline().label("Disable input").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.backend.switch_audio(None, Some("__none__"));
+                            this.log.push(LogLine::info("→ Audio input disabled"));
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            None => {
+                pane =
+                    pane.child(div().text_xs().child("Input devices: waiting for the engine…"));
+            }
+        }
+
+        pane.into_any_element()
     }
 
     fn tab_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1478,10 +1574,20 @@ impl Render for SonicSpike {
                     .into_any_element(),
             ));
 
-        let right = v_flex()
-            .size_full()
-            .gap_2()
-            .p_2()
+        let settings_el = self.settings_open.then(|| self.settings(cx));
+        let mut right = v_flex().size_full().gap_2().p_2();
+        if let Some(el) = settings_el {
+            right = right.child(self.pane(
+                "settings",
+                "Settings",
+                Role::Group,
+                "Audio settings",
+                0.0,
+                el,
+                cx,
+            ));
+        }
+        let right = right
             .child(self.pane(
                 "scope",
                 if scope_live { "Scope · live (shm)" } else { "Scope · demo" },
