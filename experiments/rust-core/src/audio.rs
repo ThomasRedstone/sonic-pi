@@ -11,11 +11,13 @@
 //! `AudioProcessor` applies before handing frames to the client.
 
 pub mod shm;
+pub mod spectrum;
 
 pub use shm::{
     metrics_idx, MetricsReader, ScopeReader, ScopeSlotReader, ScopeWriter, SCOPE_SHM_NAME,
     SHM_AUDIO_CHANNELS, SHM_AUDIO_FRAMES, SHM_AUDIO_SAMPLE_RATE,
 };
+pub use spectrum::{SpectrumFrame, SpectrumProcessor};
 
 /// The processed per-frame scope/spectrum snapshot handed to the client.
 /// Mirrors the C++ `ProcessedAudio`.
