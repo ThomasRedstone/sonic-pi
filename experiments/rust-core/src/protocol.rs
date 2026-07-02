@@ -33,6 +33,7 @@ pub mod addr {
     pub const CLOCK_AUDIO_PUBLISH_SET: &str = "/clock/audio/publish/set";
     pub const CLOCK_PEER_NAME_SET: &str = "/clock/peer_name/set";
     pub const SUPERSONIC_DEVICES_REPORT: &str = "/supersonic/devices/report";
+    pub const SUPERSONIC_DEVICES_SWITCH: &str = "/supersonic/devices/switch";
     pub const SUPERSONIC_RECORD_START: &str = "/supersonic/record/start";
     pub const SUPERSONIC_RECORD_STOP: &str = "/supersonic/record/stop";
 
@@ -130,6 +131,33 @@ pub mod out {
     /// `/supersonic/record/stop`.
     pub fn record_stop() -> OscMessage {
         msg(addr::SUPERSONIC_RECORD_STOP, vec![])
+    }
+
+    /// `/supersonic/devices/report [gui_listen_port]` — registers the port
+    /// as a device-push notify target and triggers an immediate report
+    /// (mirrors `SonicPiAPI::RequestAudioDevices`).
+    pub fn supersonic_devices_report(gui_listen_port: u16) -> OscMessage {
+        msg(addr::SUPERSONIC_DEVICES_REPORT, vec![OscType::Int(gui_listen_port as i32)])
+    }
+
+    /// `/supersonic/devices/switch [output] [sampleRate] [bufferSize]
+    /// [input]` — the engine hot-swaps devices in place. This is what the
+    /// daemon forwards `/daemon/audio/switch-device` to (token stripped).
+    pub fn supersonic_devices_switch(
+        output: &str,
+        sample_rate: f32,
+        buffer_size: i32,
+        input: &str,
+    ) -> OscMessage {
+        msg(
+            addr::SUPERSONIC_DEVICES_SWITCH,
+            vec![
+                OscType::String(output.to_string()),
+                OscType::Float(sample_rate),
+                OscType::Int(buffer_size),
+                OscType::String(input.to_string()),
+            ],
+        )
     }
 
     /// `/daemon/audio/switch-device [token] [output] [sampleRate] [bufferSize]

@@ -479,21 +479,25 @@ enum Backend {
 }
 
 impl Backend {
-    /// Try the real runtime — the Phase-4 Rust supervisor when
-    /// `SONIC_OXIDE_SUPERVISOR=1` (3 processes, app owns the children),
-    /// otherwise the classic daemon.rb (4s handshake budget). Falls back to
-    /// loopback. Returns the backend plus a human status line for the log.
+    /// Boot chain: the Phase-4 Rust supervisor by DEFAULT (3 processes, app
+    /// owns the children; all daemon features ported — 4560 cues, TOML
+    /// audio opts, direct device switching), falling back to daemon.rb,
+    /// then loopback. `SONIC_OXIDE_DAEMON=1` forces the daemon.rb path
+    /// (the A/B oracle).
     fn connect(sink: Arc<Mutex<Vec<ClientEvent>>>) -> (Backend, String) {
-        let use_supervisor = std::env::var("SONIC_OXIDE_SUPERVISOR").as_deref() == Ok("1");
-        let attempt = if use_supervisor {
-            Self::try_supervisor(sink.clone())
-                .map(|b| (b, "=> Booted via Rust supervisor (3 processes, no daemon.rb)."))
-        } else {
-            Self::try_real(sink.clone())
-                .map(|b| (b, "=> Connected to REAL Sonic Pi daemon."))
-        };
-        match attempt {
-            Ok((b, msg)) => (b, msg.into()),
+        let force_daemon = std::env::var("SONIC_OXIDE_DAEMON").as_deref() == Ok("1");
+        if !force_daemon {
+            match Self::try_supervisor(sink.clone()) {
+                Ok(b) => {
+                    return (b, "=> Booted via Rust supervisor (3 processes, no daemon.rb).".into())
+                }
+                Err(why) => {
+                    eprintln!("sonic-oxide: supervisor boot failed ({why}); trying daemon.rb");
+                }
+            }
+        }
+        match Self::try_real(sink.clone()) {
+            Ok(b) => (b, "=> Connected to REAL Sonic Pi daemon.".into()),
             Err(why) => {
                 let b = Self::loopback(sink);
                 (b, format!("=> Real runtime unavailable ({why}); using loopback spider."))
@@ -633,11 +637,16 @@ impl Backend {
     /// daemon a moment to bring Spider/SuperSonic down before the kill
     /// backstop. Blocks (bounded) — called from the app-quit hook.
     /// Switch audio devices (real backend only). `None` leaves that side
-    /// unchanged; `Some("__none__")` for input disables audio inputs.
+    /// unchanged; `Some("__none__")` for input disables audio inputs. In
+    /// daemon mode the request goes via the daemon (token-checked forward);
+    /// in supervisor mode straight to the engine.
     fn switch_audio(&self, output: Option<&str>, input: Option<&str>) {
-        if let Backend::Real { session, .. } = self {
-            let _ =
-                session.switch_audio_device(output.unwrap_or(""), 0.0, 0, input.unwrap_or(""));
+        if let Backend::Real { session, runtime, .. } = self {
+            let (out, inp) = (output.unwrap_or(""), input.unwrap_or(""));
+            let _ = match runtime {
+                Runtime::DaemonRb(_) => session.switch_audio_device(out, 0.0, 0, inp),
+                Runtime::Rust(_) => session.switch_audio_device_direct(out, 0.0, 0, inp),
+            };
         }
     }
 

@@ -84,6 +84,12 @@ impl Session {
         let keep_alive =
             KeepAlive::start(UdpOscSender::to_localhost(ports.get(PortId::Daemon))?, token);
 
+        // Register for device pushes (and get an immediate report) — this is
+        // how the device lists reach the client in both boot modes.
+        let _ = supersonic.send(&protocol::out::supersonic_devices_report(
+            ports.get(PortId::GuiListenToSpider),
+        ));
+
         Ok(Session {
             spider,
             daemon,
@@ -92,6 +98,24 @@ impl Session {
             _server: server,
             _keep_alive: keep_alive,
         })
+    }
+
+    /// Hot-swap audio devices directly on the engine
+    /// (`/supersonic/devices/switch`) — the supervisor-mode path, where
+    /// there is no daemon to forward `/daemon/audio/switch-device`.
+    pub fn switch_audio_device_direct(
+        &self,
+        output: &str,
+        sample_rate: f32,
+        buffer_size: i32,
+        input: &str,
+    ) -> Result<(), CoreError> {
+        self.supersonic.send(&protocol::out::supersonic_devices_switch(
+            output,
+            sample_rate,
+            buffer_size,
+            input,
+        ))
     }
 
     /// Run a buffer (`/save-and-run-buffer`).

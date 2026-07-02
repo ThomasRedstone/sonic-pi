@@ -15,10 +15,16 @@ use sonicpi_core::{ApiClient, ClientEvent, Session};
 
 const QUIET_RUN: &str = "live_loop :sup do\n  sample :bd_haus, amp: 0\n  sleep 0.25\nend";
 
-struct Counter(Arc<AtomicUsize>);
+struct Counter {
+    events: Arc<AtomicUsize>,
+    device_pushes: Arc<AtomicUsize>,
+}
 impl ApiClient for Counter {
-    fn on_event(&self, _e: ClientEvent) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    fn on_event(&self, e: ClientEvent) {
+        self.events.fetch_add(1, Ordering::Relaxed);
+        if matches!(e, ClientEvent::AudioDevices(_)) {
+            self.device_pushes.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -30,8 +36,12 @@ fn main() {
     println!("engine on {scsynth}, token {}", sup.ports.token);
 
     let events = Arc::new(AtomicUsize::new(0));
-    let session =
-        Session::connect(&sup.ports, Arc::new(Counter(events.clone()))).expect("session");
+    let device_pushes = Arc::new(AtomicUsize::new(0));
+    let session = Session::connect(
+        &sup.ports,
+        Arc::new(Counter { events: events.clone(), device_pushes: device_pushes.clone() }),
+    )
+    .expect("session");
 
     // Give Spider time to boot, then drive a run.
     std::thread::sleep(Duration::from_secs(10));
@@ -41,8 +51,11 @@ fn main() {
     std::thread::sleep(Duration::from_secs(2));
 
     let n = events.load(Ordering::Relaxed);
+    let devices = device_pushes.load(Ordering::Relaxed);
     let (spider_up, engine_up) = sup.children_running();
-    println!("events received: {n}; spider up: {spider_up}; engine up: {engine_up}");
+    println!(
+        "events received: {n} (device pushes: {devices}); spider up: {spider_up}; engine up: {engine_up}"
+    );
 
     sup.shutdown();
     let (spider_after, engine_after) = sup.children_running();
@@ -51,7 +64,15 @@ fn main() {
         "after shutdown — spider: {spider_after}, engine: {engine_after}, shm gone: {shm_gone}"
     );
 
-    let ok = n > 0 && spider_up && engine_up && !spider_after && !engine_after && shm_gone;
+    // Device pushes prove the /supersonic/devices/report registration works
+    // without a daemon in the middle (the settings pane depends on it).
+    let ok = n > 0
+        && devices > 0
+        && spider_up
+        && engine_up
+        && !spider_after
+        && !engine_after
+        && shm_gone;
     println!("{}", if ok { "PASS" } else { "FAIL" });
     std::process::exit(if ok { 0 } else { 1 });
 }
