@@ -247,19 +247,30 @@ forces it) → loopback. Sonic Oxide now runs 3 processes by default.
   (gettext-compatible shape), etc/i18n/<lang>.conf via SONIC_OXIDE_LANG/
   LANG, per-key fallback; pane titles wired; demo de.conf shipped.
 
-## Next priorities
+## Done 2026-07-02 (dock-lite complete, AppDir, i18n labels)
 
-1. **Dock system**: full gpui-component `DockArea` (drag/rearrange) —
-   collapsible panes cover the fold/unfold half already.
-2. **Packaging v2**: bundle ruby (drop the system-ruby dependency),
-   AppImage target, mac/windows scripts.
-3. **i18n sweep**: extract the remaining UI strings through tr() (titles
-   done; buttons/labels/log prefixes remain), then real .po tooling.
-4. **Upstream conversations** (gpui-component): completion-menu custom
-   widgets (piano/slider), editor a11y (TextRun approach +
-   character_positions from real layout).
+- **Resizable right column**: scope/cues/log in a v_resizable group —
+  with click-to-collapse that's fold + resize done; only drag-to-REARRANGE
+  remains of the dock story.
+- **AppImage-ready AppDir** in package-linux.sh (AppRun/desktop/icon; own
+  boot+verified-shutdown smoke test PASS — also covers the
+  SONIC_OXIDE_APP_ROOT env path). `.AppImage` builds when appimagetool is
+  installed.
+- **i18n**: all 11 screen-reader control labels translate (de locale
+  complete for controls + titles).
+
+## Next priorities (the remaining tail)
+
+1. **DockArea drag-to-rearrange** — the last dock piece; a real refactor
+   (panes become Panel entities).
+2. **Bundle ruby** in packaging (drop the system-ruby dependency) — the
+   release blocker for machines without ruby 3.x.
+3. **i18n**: remaining strings (button captions, log prefixes, Help/
+   Settings body text), then .po migration.
+4. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
+   editor a11y glyph metrics.
 5. **Qt retirement** per roadmap exit criteria — after sustained
-   side-by-side parity use.
+   side-by-side parity use (weeks, not hours).
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 
