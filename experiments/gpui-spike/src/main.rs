@@ -14,6 +14,7 @@
 //! additionally goes through `EditorA11y`, a custom element that writes the
 //! buffer text into the AccessKit node *value* — the first Tier-2 increment.
 
+mod i18n;
 mod store;
 mod vocab;
 
@@ -1152,6 +1153,8 @@ struct SonicSpike {
     recording: Option<PathBuf>,
     /// Help pane: the loaded vocabulary doubles as the docs index.
     vocab: Rc<Vocab>,
+    /// UI translations (i18n groundwork — pane titles wired first).
+    i18n: Rc<i18n::I18n>,
     help_open: bool,
     help_query: Entity<InputState>,
     help_selected: Option<String>,
@@ -1174,6 +1177,10 @@ impl SonicSpike {
         // shared by every buffer).
         let app_root = app_root();
         let vocab = Rc::new(Vocab::load(&app_root));
+        let i18n = Rc::new(i18n::I18n::load(
+            &app_root.join("../etc/i18n"),
+            &i18n::I18n::detect_lang(),
+        ));
 
         // Ten buffers: stored content wins, then seed, then empty.
         let store_dir = store::default_store_dir();
@@ -1337,6 +1344,7 @@ impl SonicSpike {
             last_tap: None,
             recording: None,
             vocab,
+            i18n,
             help_open: false,
             help_query,
             help_selected: None,
@@ -2257,7 +2265,7 @@ impl Render for SonicSpike {
         if let Some(el) = nodes_el {
             right = right.child(self.pane(
                 "nodes",
-                "Nodes",
+                self.i18n.tr("Nodes"),
                 Role::Group,
                 "Live synth node tree",
                 0.0,
@@ -2268,7 +2276,7 @@ impl Render for SonicSpike {
         if let Some(el) = help_el {
             right = right.child(self.pane(
                 "help",
-                "Help",
+                self.i18n.tr("Help"),
                 Role::Group,
                 "Documentation search",
                 0.0,
@@ -2279,7 +2287,7 @@ impl Render for SonicSpike {
         if let Some(el) = settings_el {
             right = right.child(self.pane(
                 "settings",
-                "Settings",
+                self.i18n.tr("Settings"),
                 Role::Group,
                 "Audio settings",
                 0.0,
@@ -2299,7 +2307,7 @@ impl Render for SonicSpike {
             ))
             .child(self.pane(
                 "cues",
-                "Cues",
+                self.i18n.tr("Cues"),
                 Role::Group,
                 cues_label,
                 0.0,
@@ -2308,7 +2316,7 @@ impl Render for SonicSpike {
             ))
             .child(self.pane(
                 "log",
-                "Log",
+                self.i18n.tr("Log"),
                 Role::Group,
                 log_label,
                 0.0,
@@ -2358,7 +2366,7 @@ impl Render for SonicSpike {
                 h_resizable("main")
                     .child(resizable_panel().child(self.pane(
                         "editor",
-                        "Editor",
+                        self.i18n.tr("Editor"),
                         Role::Group,
                         editor_label,
                         self.flash,

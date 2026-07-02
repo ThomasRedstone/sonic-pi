@@ -19,6 +19,9 @@ pub enum VocabKind {
     Fx,
     Sample,
     Func,
+    Note,
+    Scale,
+    Chord,
 }
 
 impl VocabKind {
@@ -28,6 +31,9 @@ impl VocabKind {
             VocabKind::Fx => "fx",
             VocabKind::Sample => "sample",
             VocabKind::Func => "fn",
+            VocabKind::Note => "note",
+            VocabKind::Scale => "scale",
+            VocabKind::Chord => "chord",
         }
     }
 }
@@ -203,6 +209,61 @@ pub fn parse_lang_docs(rb: &str) -> Vec<VocabEntry> {
     entries
 }
 
+/// All note symbols (`:c4`, `:fs3`, `:bb5`, …) — the piano-helper vocabulary,
+/// generated rather than parsed (the pitch grammar is fixed).
+pub fn note_names() -> Vec<VocabEntry> {
+    const NAMES: [&str; 17] = [
+        "c", "cs", "db", "d", "ds", "eb", "e", "f", "fs", "gb", "g", "gs", "ab", "a", "as", "bb",
+        "b",
+    ];
+    let mut out = Vec::new();
+    for octave in 0..=8 {
+        for name in NAMES {
+            out.push(VocabEntry::new(format!(":{name}{octave}"), VocabKind::Note, ""));
+        }
+    }
+    out
+}
+
+/// Scale names from `scale.rb`'s SCALE hash (modern `name: value` syntax —
+/// the keys of the first hash literal after `SCALE = lambda`).
+pub fn parse_scale_names(rb: &str) -> Vec<VocabEntry> {
+    let mut out = Vec::new();
+    let Some(start) = rb.find("SCALE = lambda") else { return out };
+    let Some(brace) = rb[start..].find("\n      {") else { return out };
+    for line in rb[start + brace..].lines().skip(1) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('}') {
+            break;
+        }
+        if let Some((key, _)) = trimmed.split_once(':') {
+            let key = key.trim();
+            if !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                out.push(VocabEntry::new(format!(":{key}"), VocabKind::Scale, ""));
+            }
+        }
+    }
+    out
+}
+
+/// Chord names from `chord.rb` (`:name =>` keys).
+pub fn parse_chord_names(rb: &str) -> Vec<VocabEntry> {
+    let mut out = Vec::new();
+    for line in rb.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix(':') else { continue };
+        let Some((key, tail)) = rest.split_once(char::is_whitespace) else { continue };
+        if tail.trim_start().starts_with("=>")
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            out.push(VocabEntry::new(format!(":{key}"), VocabKind::Chord, ""));
+        }
+    }
+    out
+}
+
 /// Sample names from the samples directory (`:file_stem` per audio file).
 pub fn samples_from_dir(dir: &Path) -> Vec<VocabEntry> {
     let mut out = Vec::new();
@@ -245,6 +306,16 @@ impl Vocab {
                     }
                 }
             }
+        }
+
+        // Notes (generated) + scales/chords from their Ruby sources of truth.
+        entries.extend(note_names());
+        let sonicpi = app_root.join("server/ruby/lib/sonicpi");
+        if let Ok(src) = std::fs::read_to_string(sonicpi.join("scale.rb")) {
+            entries.extend(parse_scale_names(&src));
+        }
+        if let Ok(src) = std::fs::read_to_string(sonicpi.join("chord.rb")) {
+            entries.extend(parse_chord_names(&src));
         }
 
         entries.sort_by(|a, b| a.label.cmp(&b.label));
@@ -477,6 +548,36 @@ and more.",
         assert!(vocab.opt_completions("sample :bd_haus, am", "am", 10).is_empty());
         // Symbol prefixes never get opts.
         assert!(vocab.opt_completions("use_synth :tb303, ", ":cu", 10).is_empty());
+    }
+
+    #[test]
+    fn notes_scales_chords_load() {
+        let notes = note_names();
+        assert_eq!(notes.len(), 17 * 9);
+        assert!(notes.iter().any(|n| n.label == ":c4"));
+        assert!(notes.iter().any(|n| n.label == ":fs3"));
+
+        let scale_rb = "    SCALE = lambda{\n      x = 1\n      {\n           diatonic:           ionian_sequence,\n           dorian:             ionian_sequence.rotate(1),\n      }\n    }.call\n";
+        let scales: Vec<String> =
+            parse_scale_names(scale_rb).into_iter().map(|e| e.label).collect();
+        assert_eq!(scales, vec![":diatonic", ":dorian"]);
+
+        let chord_rb = "        :major7          => major7,\n        :m7 => minor7,\n        not_a_chord\n";
+        let chords: Vec<String> =
+            parse_chord_names(chord_rb).into_iter().map(|e| e.label).collect();
+        assert_eq!(chords, vec![":major7", ":m7"]);
+    }
+
+    #[test]
+    fn real_repo_has_notes_scales_chords() {
+        let app_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
+        let vocab = Vocab::load(&app_root);
+        let has = |l: &str, k: VocabKind| {
+            vocab.entries.iter().any(|e| e.label == l && e.kind == k)
+        };
+        assert!(has(":c4", VocabKind::Note));
+        assert!(has(":minor_pentatonic", VocabKind::Scale), "scale.rb parse broke");
+        assert!(has(":major7", VocabKind::Chord), "chord.rb parse broke");
     }
 
     #[test]
