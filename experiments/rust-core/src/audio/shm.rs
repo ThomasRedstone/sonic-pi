@@ -889,6 +889,46 @@ mod tests {
     }
 
     #[test]
+    fn readers_reject_missing_segments_and_bad_magic() {
+        // Missing segment: every reader errors cleanly.
+        assert!(ScopeReader::open("/sonic_oxide_missing_seg").is_err());
+        assert!(ScopeSlotReader::open("/sonic_oxide_missing_seg", 0).is_err());
+        assert!(MetricsReader::open("/sonic_oxide_missing_seg").is_err());
+        assert!(NodeTreeReader::open("/sonic_oxide_missing_seg").is_err());
+
+        // Present but unpublished (magic zero): same story.
+        let name = "/sonic_oxide_bad_magic_test";
+        let _map = Mapping::create(name, 4096).unwrap();
+        assert!(ScopeReader::open(name).is_err());
+        assert!(ScopeSlotReader::open(name, 0).is_err());
+        assert!(MetricsReader::open(name).is_err());
+        assert!(NodeTreeReader::open(name).is_err());
+    }
+
+    #[test]
+    fn scope_reader_rejects_a_segment_without_audio_slots() {
+        let name = "/sonic_oxide_no_slots_test";
+        let map = Mapping::create(name, 4096).unwrap();
+        unsafe {
+            let h = map.ptr as *mut ShmSegmentHeader;
+            (*h).blob_offset = BLOB_OFFSET;
+            (*h).audio_slot_count = 0;
+            (*(map.ptr as *mut AtomicU32)).store(SEGMENT_MAGIC, Ordering::Release);
+        }
+        assert!(ScopeReader::open(name).is_err());
+        // And a scope-slot geometry that can't fit its regions is rejected.
+        unsafe {
+            let h = map.ptr as *mut ShmSegmentHeader;
+            (*h).scope_max = 1;
+            (*h).scope_frames = 1024;
+            (*h).scope_channels = 2;
+            (*h).scope_slot_bytes = 64; // far too small for 3 regions
+            (*h).scope_slot_header = 16;
+        }
+        assert!(ScopeSlotReader::open(name, 0).is_err());
+    }
+
+    #[test]
     fn metrics_reader_reads_published_fields() {
         let name = "/sonic_metrics_test";
         let count = 37u32;

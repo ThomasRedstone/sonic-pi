@@ -69,3 +69,29 @@ impl Default for AudioProcessor {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn facade_reads_a_live_ring_and_reports_disconnected_states() {
+        let mut p = AudioProcessor::default();
+        // Disconnected: inert.
+        assert!(!p.is_active());
+        let mut out = Vec::new();
+        assert!(!p.read_scope_mono(&mut out, 64));
+        assert!(p.connect("/sonic_oxide_no_such_segment").is_err());
+
+        // Connected to a live fake ring: data flows through the facade.
+        let name = "/sonic_oxide_audio_facade_test";
+        let mut w = ScopeWriter::create(name).unwrap();
+        let block = vec![0.25f32; 128 * SHM_AUDIO_CHANNELS as usize];
+        w.write_interleaved(&block, 128);
+        p.connect(name).unwrap();
+        assert!(p.is_active());
+        assert!(p.read_scope_mono(&mut out, 64));
+        assert_eq!(out.len(), 64);
+        assert!(out.iter().all(|&s| (s - 0.25).abs() < 1e-6));
+    }
+}

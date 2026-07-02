@@ -92,4 +92,40 @@ mod tests {
         assert_eq!(map["A"], "B");
         assert_eq!(map["K"], "V");
     }
+
+    #[test]
+    fn detects_language_with_the_documented_precedence() {
+        // One test mutates env sequentially — no parallel readers of these
+        // vars exist elsewhere in this test binary.
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe { std::env::set_var("SONIC_OXIDE_LANG", "pt"); }
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe { std::env::set_var("LANG", "de_DE.UTF-8"); }
+        assert_eq!(I18n::detect_lang(), "pt"); // explicit override wins
+
+        // SAFETY: test-only, sequential env access in this binary.
+
+        unsafe { std::env::remove_var("SONIC_OXIDE_LANG"); }
+        assert_eq!(I18n::detect_lang(), "de"); // LANG prefix
+
+        // SAFETY: test-only, sequential env access in this binary.
+
+        unsafe { std::env::set_var("LANG", "fr"); }
+        assert_eq!(I18n::detect_lang(), "fr"); // bare LANG
+
+        // SAFETY: test-only, sequential env access in this binary.
+
+        unsafe { std::env::set_var("SONIC_OXIDE_LANG", ""); }
+        assert_eq!(I18n::detect_lang(), "fr"); // empty override falls through
+
+        // SAFETY: test-only, sequential env access in this binary.
+
+        unsafe { std::env::remove_var("SONIC_OXIDE_LANG"); }
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe { std::env::remove_var("LANG"); }
+        assert_eq!(I18n::detect_lang(), "en"); // nothing set → English
+
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe { std::env::set_var("LANG", "en_GB.UTF-8") } // leave sane for other code
+    }
 }

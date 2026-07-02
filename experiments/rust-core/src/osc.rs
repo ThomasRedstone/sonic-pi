@@ -123,4 +123,29 @@ mod tests {
         assert_eq!(got.addr, "/hello");
         assert!(matches!(got.args[0], OscType::Int(7)));
     }
+
+    #[test]
+    fn survives_garbage_and_bundles_and_stays_alive() {
+        let (tx, rx) = mpsc::channel();
+        let server = OscServer::start(0, move |m| {
+            let _ = tx.send(m);
+        })
+        .unwrap();
+
+        // Raw garbage datagram: must not kill the server thread.
+        let raw = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        raw.send_to(b"definitely not osc", ("127.0.0.1", server.port())).unwrap();
+
+        // A real message afterwards still arrives.
+        let sender = UdpOscSender::to_localhost(server.port()).unwrap();
+        sender.send(&OscMessage { addr: "/after".into(), args: vec![] }).unwrap();
+        let got = rx.recv_timeout(Duration::from_secs(2)).expect("server died on garbage");
+        assert_eq!(got.addr, "/after");
+    }
+
+    #[test]
+    fn binding_a_taken_port_errors() {
+        let holder = OscServer::start(0, |_| {}).unwrap();
+        assert!(OscServer::start(holder.port(), |_| {}).is_err());
+    }
 }

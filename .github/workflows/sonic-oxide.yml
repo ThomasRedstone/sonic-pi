@@ -30,6 +30,10 @@ jobs:
       - name: Unit + integration + golden tests
         working-directory: experiments/rust-core
         run: cargo test --all-targets
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage gate (rust-core is held at >=90% lines; 95% today)
+        working-directory: experiments/rust-core
+        run: cargo llvm-cov --all-targets --fail-under-lines 90 --summary-only
 
   gpui-spike:
     name: gpui-spike (nightly, per rust-toolchain.toml)

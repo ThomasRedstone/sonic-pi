@@ -406,6 +406,115 @@ mod tests {
     }
 
     #[test]
+    fn all_outgoing_builders_carry_the_documented_shapes() {
+        let m = out::ping(9, "tag");
+        assert_eq!(m.addr, addr::PING);
+        assert!(matches!(&m.args[1], OscType::String(s) if s == "tag"));
+
+        assert_eq!(out::keep_alive(9).addr, addr::DAEMON_KEEP_ALIVE);
+        assert_eq!(out::daemon_exit(9).addr, addr::DAEMON_EXIT);
+
+        let m = out::set_global_timewarp(9, 0.25);
+        assert_eq!(m.addr, addr::SET_GLOBAL_TIMEWARP);
+        assert!(matches!(m.args[1], OscType::Double(d) if d == 0.25));
+
+        let m = out::clock_tempo_set(128.0);
+        assert_eq!(m.addr, addr::CLOCK_TEMPO_SET);
+        assert!(matches!(m.args[0], OscType::Float(f) if f == 128.0));
+
+        let m = out::record_start("/tmp/x.wav", "wav", 24);
+        assert_eq!(m.addr, addr::SUPERSONIC_RECORD_START);
+        assert!(matches!(m.args[2], OscType::Int(24)));
+        assert!(out::record_stop().args.is_empty());
+
+        let m = out::supersonic_devices_report(1234);
+        assert_eq!(m.addr, addr::SUPERSONIC_DEVICES_REPORT);
+        assert!(matches!(m.args[0], OscType::Int(1234)));
+
+        let m = out::supersonic_devices_switch("Out", 44100.0, 512, "In");
+        assert_eq!(m.addr, addr::SUPERSONIC_DEVICES_SWITCH);
+        assert!(matches!(&m.args[3], OscType::String(s) if s == "In"));
+    }
+
+    #[test]
+    fn parses_the_remaining_incoming_vocabulary() {
+        let msg = |addr: &str, args: Vec<OscType>| OscMessage { addr: addr.into(), args };
+        let s = |v: &str| OscType::String(v.into());
+
+        match parse_incoming(&msg(addr::LOG_INFO, vec![OscType::Int(1), s("=> hi")])) {
+            Some(ClientEvent::Report(m)) => {
+                assert_eq!(m.text, "=> hi");
+                assert_eq!(m.style, 1);
+            }
+            other => panic!("log/info: {other:?}"),
+        }
+        for (a, kind) in
+            [(addr::ERROR, MessageType::RuntimeError), (addr::SYNTAX_ERROR, MessageType::SyntaxError)]
+        {
+            match parse_incoming(&msg(a, vec![OscType::Int(3), s("boom"), s("bt"), OscType::Int(7)])) {
+                Some(ClientEvent::Report(m)) => {
+                    assert_eq!(m.kind, kind);
+                    assert_eq!(m.job_id, 3);
+                    assert_eq!(m.line, 7);
+                    assert_eq!(m.backtrace, "bt");
+                }
+                other => panic!("{a}: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            parse_incoming(&msg(addr::RUNS_ALL_COMPLETED, vec![s("x")])),
+            Some(ClientEvent::Status(st)) if st.kind == StatusType::AllComplete
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::EXITED, vec![s("x")])),
+            Some(ClientEvent::Status(st)) if st.kind == StatusType::Exited
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::EXITED_WITH_BOOT_ERROR, vec![s("no engine")])),
+            Some(ClientEvent::BootError(e)) if e == "no engine"
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::SPIDER_READY, vec![])),
+            Some(ClientEvent::SpiderReady)
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::LINK_BPM, vec![OscType::Double(99.5)])),
+            Some(ClientEvent::Bpm(b)) if b == 99.5
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::LINK_NUM_PEERS, vec![OscType::Int(2)])),
+            Some(ClientEvent::ActiveLinks(2))
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::MIDI_IN_PORTS, vec![s("in1")])),
+            Some(ClientEvent::Midi(m)) if m.kind == MidiType::In && m.port_info == "in1"
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::MIDI_OUT_PORTS, vec![s("out1")])),
+            Some(ClientEvent::Midi(m)) if m.kind == MidiType::Out
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::GAMEPAD_DEVICES_LIST, vec![s("pads")])),
+            Some(ClientEvent::GamepadDevices(g)) if g == "pads"
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::ACK, vec![s("id")])),
+            Some(ClientEvent::Status(st)) if st.kind == StatusType::Ack
+        ));
+        // Recognised-but-unmodelled families stay visible…
+        assert!(matches!(
+            parse_incoming(&msg("/buffer/replace-lines", vec![])),
+            Some(ClientEvent::Unhandled { .. })
+        ));
+        assert!(matches!(
+            parse_incoming(&msg(addr::UPDATE_INFO_TEXT, vec![])),
+            Some(ClientEvent::Unhandled { .. })
+        ));
+        // …and unknown addresses are dropped.
+        assert!(parse_incoming(&msg("/no/such/address", vec![])).is_none());
+    }
+
+    #[test]
     fn parses_incoming_osc_cue_in_wire_order() {
         // time, id, address, args — as osc_handler.cpp pops them.
         let m = OscMessage {

@@ -104,4 +104,22 @@ mod tests {
     fn rejects_short_lines() {
         assert!(Ports::parse_daemon_line("1 2 3").is_err());
     }
+
+    #[test]
+    fn rejects_malformed_fields() {
+        assert!(Ports::parse_daemon_line("x 37001 37002 37003 37004 1").is_err()); // bad port
+        assert!(Ports::parse_daemon_line("37000 37001 37002 37003 37004 nope").is_err()); // bad token
+        assert!(Ports::parse_daemon_line("70000 37001 37002 37003 37004 1").is_err()); // port overflow
+    }
+
+    #[test]
+    fn from_parts_round_trips_every_id() {
+        let p = Ports::from_parts(1, 2, 3, 4, 5, -9);
+        assert_eq!(p.get(PortId::Daemon), 1);
+        assert_eq!(p.get(PortId::GuiListenToSpider), 2);
+        assert_eq!(p.get(PortId::GuiSendToSpider), 3);
+        assert_eq!(p.get(PortId::Scsynth), 4);
+        assert_eq!(p.get(PortId::TauOscCues), 5);
+        assert_eq!(p.token, -9);
+    }
 }

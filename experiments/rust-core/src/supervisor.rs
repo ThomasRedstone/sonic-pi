@@ -200,8 +200,13 @@ impl Supervisor {
 
         // The engine publishes /dev/shm/SuperSonic_<port> once it is up —
         // the same readiness signal the shm readers use.
+        // (SONIC_OXIDE_BOOT_TIMEOUT_SECS tunes the wait — tests use stubs.)
+        let boot_timeout = std::env::var("SONIC_OXIDE_BOOT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15);
         let shm_path = PathBuf::from(format!("/dev/shm/SuperSonic_{scsynth}"));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(boot_timeout);
         while !shm_path.exists() {
             if Instant::now() >= deadline {
                 let mut child = supersonic;

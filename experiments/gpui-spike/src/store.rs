@@ -66,4 +66,35 @@ mod tests {
         save_buffers(&dir, &["sleep 1".to_string()]);
         assert_eq!(load_buffers(&dir, 1)[0].as_deref(), Some("sleep 1"));
     }
+
+    #[test]
+    fn default_dir_migrates_the_old_streamlined_store() {
+        // Point HOME at a scratch dir (no other test in this binary reads
+        // HOME) holding a legacy "streamlined" store.
+        let fake_home = std::env::temp_dir().join("sonic_oxide_store_home_test");
+        let _ = std::fs::remove_dir_all(&fake_home);
+        let old = fake_home.join(".sonic-pi/store/streamlined");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("buffer_0.spi"), "legacy").unwrap();
+
+        let real_home = std::env::var_os("HOME");
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe { std::env::set_var("HOME", &fake_home); }
+        let dir = default_store_dir();
+        // Second call: migration already done, path is stable.
+        let dir2 = default_store_dir();
+        // SAFETY: test-only, sequential env access in this binary.
+        unsafe {
+            match real_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(dir, fake_home.join(".sonic-pi/store/sonic-oxide"));
+        assert_eq!(dir, dir2);
+        assert!(!old.exists(), "old dir should have been renamed away");
+        assert_eq!(load_buffers(&dir, 1)[0].as_deref(), Some("legacy"));
+        let _ = std::fs::remove_dir_all(&fake_home);
+    }
 }
