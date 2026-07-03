@@ -101,7 +101,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev \
-            libx11-xcb-dev libvulkan-dev libasound2-dev rsync ruby-full
+            libx11-xcb-dev libvulkan-dev libasound2-dev rsync ruby-full \
+            libfontconfig-dev pkg-config
           curl -sL -o /usr/local/bin/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
