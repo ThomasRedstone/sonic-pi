@@ -1586,6 +1586,8 @@ struct SonicSpike {
     help_open: bool,
     help_query: Entity<InputState>,
     help_selected: Option<String>,
+    /// Help category browser: which vocab kind is listed (None = search-only).
+    help_kind: Option<VocabKind>,
     /// Tutorial + examples browser (Tier 2.1). Content loads on first open.
     tutorial_open: bool,
     chapters: Option<Vec<tutorial::Chapter>>,
@@ -1874,6 +1876,7 @@ impl SonicSpike {
             help_open: false,
             help_query,
             help_selected: None,
+            help_kind: None,
             tutorial_open: false,
             chapters: None,
             examples: None,
@@ -2430,71 +2433,91 @@ impl SonicSpike {
     /// the same sources the full Qt help renders.
     fn help(&self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.help_query.read(cx).value().to_string();
-        let hits: Vec<(String, &'static str)> = self
-            .vocab
-            .search(&query, 10)
-            .into_iter()
-            .map(|e| (e.label.clone(), e.kind.label()))
-            .collect();
+        let muted = cx.theme().muted_foreground;
 
-        let mut pane = v_flex()
+        // Category row (Qt help-tab parity: Synths/FX/Samples/Functions/…).
+        let mut cats = h_flex().gap_1().flex_wrap();
+        for (i, kind) in VocabKind::ALL.into_iter().enumerate() {
+            let current = self.help_kind == Some(kind);
+            let btn = Button::new(("help-cat", i))
+                .xsmall()
+                .label(self.i18n.tr(kind.plural()).to_string());
+            let btn = if current { btn.primary() } else { btn.outline() };
+            cats = cats.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.help_kind = if this.help_kind == Some(kind) { None } else { Some(kind) };
+                cx.notify();
+            })));
+        }
+
+        // Left nav: search hits when a query is live, else the selected
+        // category's full (label-sorted) list.
+        let listed: Vec<(String, &'static str)> = if !query.trim().is_empty() {
+            self.vocab
+                .search(&query, 50)
+                .into_iter()
+                .map(|e| (e.label.clone(), e.kind.label()))
+                .collect()
+        } else if let Some(kind) = self.help_kind {
+            self.vocab
+                .by_kind(kind)
+                .into_iter()
+                .map(|e| (e.label.clone(), e.kind.label()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut nav = v_flex().id("help-nav").w(px(190.)).overflow_y_scroll().gap_0p5().p_1();
+        if listed.is_empty() {
+            let hint = if query.trim().is_empty() {
+                self.i18n.tr("Pick a category — or search.")
+            } else {
+                self.i18n.tr("No matches.")
+            };
+            nav = nav.child(div().text_xs().text_color(muted).child(hint.to_string()));
+        }
+        for (i, (label, kind)) in listed.into_iter().enumerate() {
+            let selected = self.help_selected.as_deref() == Some(label.as_str());
+            // Category lists are homogeneous — only search hits need the
+            // kind tag for disambiguation.
+            let text = if self.help_kind.is_some() && query.trim().is_empty() {
+                label.clone()
+            } else {
+                format!("{label} ({kind})")
+            };
+            let btn = Button::new(("help-hit", i)).xsmall().label(text);
+            let btn = if selected { btn.primary() } else { btn.ghost() };
+            nav = nav.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.help_selected = Some(label.clone());
+                cx.notify();
+            })));
+        }
+
+        // Detail: the entry as rendered markdown (title, summary, full doc
+        // body, per-option reference) — uncapped, scrolls.
+        let body: AnyElement = match self.help_selected.as_deref().and_then(|l| self.vocab.get(l))
+        {
+            Some(entry) => div()
+                .id("help-body")
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_y_scroll()
+                .p_2()
+                .text_sm()
+                .child(gpui_component::text::markdown(entry.doc_markdown()))
+                .into_any_element(),
+            None => div().flex_1().into_any_element(),
+        };
+
+        v_flex()
             .gap_1()
             .p_2()
             .text_sm()
-            .child(Input::new(&self.help_query).small());
-
-        if !hits.is_empty() {
-            let mut row = h_flex().gap_1().flex_wrap();
-            for (i, (label, kind)) in hits.iter().enumerate() {
-                let selected = self.help_selected.as_deref() == Some(label.as_str());
-                let btn = Button::new(("help-hit", i))
-                    .xsmall()
-                    .label(format!("{label} ({kind})"));
-                let btn = if selected { btn.primary() } else { btn.outline() };
-                let label = label.clone();
-                row = row.child(btn.on_click(cx.listener(move |this, _, _, cx| {
-                    this.help_selected = Some(label.clone());
-                    cx.notify();
-                })));
-            }
-            pane = pane.child(row);
-        } else if !query.trim().is_empty() {
-            pane = pane.child(div().text_xs().child(self.i18n.tr("No matches.").to_string()));
-        }
-
-        if let Some(entry) = self.help_selected.as_deref().and_then(|l| self.vocab.get(l)) {
-            let mut body = v_flex().gap_1().child(
-                div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                    "{} — {}",
-                    entry.label,
-                    entry.kind.label()
-                )),
-            );
-            if !entry.doc.is_empty() {
-                body = body.child(div().text_sm().child(entry.doc.clone()));
-            }
-            if !entry.long_doc.is_empty() {
-                // Full lang doc body (bounded — some run to pages).
-                let mut text: String = entry.long_doc.chars().take(1200).collect();
-                if text.len() < entry.long_doc.len() {
-                    text.push('…');
-                }
-                body = body.child(
-                    div().text_xs().text_color(cx.theme().muted_foreground).child(text),
-                );
-            }
-            if !entry.opts.is_empty() {
-                body = body.child(
-                    div()
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(entry.opts.join("   ")),
-                );
-            }
-            pane = pane.child(body);
-        }
-
-        pane.into_any_element()
+            .size_full()
+            .child(Input::new(&self.help_query).small())
+            .child(cats)
+            .child(h_flex().flex_1().min_h(px(0.)).items_start().child(nav.h_full()).child(body))
+            .into_any_element()
     }
 
     /// Tutorial + examples browser: chapter nav on the left, rendered

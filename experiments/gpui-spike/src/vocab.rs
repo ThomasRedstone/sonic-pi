@@ -25,6 +25,29 @@ pub enum VocabKind {
 }
 
 impl VocabKind {
+    pub const ALL: [VocabKind; 7] = [
+        VocabKind::Synth,
+        VocabKind::Fx,
+        VocabKind::Sample,
+        VocabKind::Func,
+        VocabKind::Note,
+        VocabKind::Scale,
+        VocabKind::Chord,
+    ];
+
+    /// Category-browser button label (i18n key).
+    pub fn plural(&self) -> &'static str {
+        match self {
+            VocabKind::Synth => "Synths",
+            VocabKind::Fx => "FX",
+            VocabKind::Sample => "Samples",
+            VocabKind::Func => "Functions",
+            VocabKind::Note => "Notes",
+            VocabKind::Scale => "Scales",
+            VocabKind::Chord => "Chords",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             VocabKind::Synth => "synth",
@@ -38,6 +61,19 @@ impl VocabKind {
     }
 }
 
+/// One synth/fx option, fully documented (mirrors the cheatsheet detail the
+/// Qt help renders: name, default, description, constraint/modulation notes).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OptDoc {
+    /// Insertable name, colon included: `"cutoff:"`.
+    pub name: String,
+    pub default: String,
+    pub doc: String,
+    /// Constraint / modulation notes ("must be zero or greater", "Has slide
+    /// parameters…").
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct VocabEntry {
     /// What completion inserts: `:tb303`, `:bd_haus`, `play`, …
@@ -45,9 +81,9 @@ pub struct VocabEntry {
     pub kind: VocabKind,
     /// One-line summary shown alongside the item.
     pub doc: String,
-    /// Option lines for synths/fx (`amp: 1`, `cutoff: 100`, …) — feeds the
-    /// Help pane; empty for samples and functions.
-    pub opts: Vec<String>,
+    /// Documented options for synths/fx — feeds completions and the Help
+    /// pane; empty for samples and functions.
+    pub opt_docs: Vec<OptDoc>,
     /// Full documentation body (the lang `doc:` field) — Help-pane only;
     /// empty when the source has no long doc.
     pub long_doc: String,
@@ -59,9 +95,40 @@ impl VocabEntry {
             label: label.into(),
             kind,
             doc: doc.into(),
-            opts: Vec::new(),
+            opt_docs: Vec::new(),
             long_doc: String::new(),
         }
+    }
+
+    /// The entry as a markdown document — the Help pane's detail view
+    /// (title, summary, full doc body, and a per-option reference like the
+    /// Qt help's synth/fx pages). Pure → unit-tested.
+    pub fn doc_markdown(&self) -> String {
+        let mut md = format!("## `{}` — {}\n\n", self.label, self.kind.label());
+        if !self.doc.is_empty() {
+            md.push_str(&format!("{}\n\n", self.doc));
+        }
+        if !self.long_doc.is_empty() {
+            md.push_str(&format!("{}\n\n", self.long_doc));
+        }
+        if !self.opt_docs.is_empty() {
+            md.push_str("### Options\n\n");
+            for o in &self.opt_docs {
+                md.push_str(&format!("**`{}`**", o.name));
+                if !o.default.is_empty() {
+                    md.push_str(&format!(" *(default {})*", o.default));
+                }
+                if !o.doc.is_empty() {
+                    md.push_str(&format!(" — {}", o.doc));
+                }
+                md.push('\n');
+                if !o.notes.is_empty() {
+                    md.push_str(&format!("\n  _{}_\n", o.notes.join("; ")));
+                }
+                md.push('\n');
+            }
+        }
+        md
     }
 }
 
@@ -75,7 +142,7 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
     let mut entries = Vec::new();
     let mut key: Option<String> = None;
     let mut doc = String::new();
-    let mut opts: Vec<String> = Vec::new();
+    let mut opts: Vec<OptDoc> = Vec::new();
     #[derive(PartialEq)]
     enum Section {
         None,
@@ -86,14 +153,14 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
 
     let flush = |key: &mut Option<String>,
                  doc: &mut String,
-                 opts: &mut Vec<String>,
+                 opts: &mut Vec<OptDoc>,
                  out: &mut Vec<VocabEntry>| {
         if let Some(k) = key.take() {
             out.push(VocabEntry {
                 label: k,
                 kind,
                 doc: std::mem::take(doc).trim().to_string(),
-                opts: std::mem::take(opts),
+                opt_docs: std::mem::take(opts),
                 long_doc: String::new(),
             });
         } else {
@@ -121,7 +188,28 @@ pub fn parse_cheatsheet(md: &str, kind: VocabKind) -> Vec<VocabEntry> {
             }
             doc.push_str(trimmed);
         } else if section == Section::Opts && !trimmed.is_empty() {
-            opts.push(trimmed.trim_start_matches('*').trim().to_string());
+            // `* name:` opens an option; its `- doc:` / `- default:` /
+            // `- <note>` sub-lines fill it in. (A legacy `* name: default`
+            // one-liner still parses.)
+            if let Some(rest) = trimmed.strip_prefix('*') {
+                let rest = rest.trim();
+                let (name, default) = match rest.split_once(':') {
+                    Some((n, d)) => (format!("{}:", n.trim()), d.trim().to_string()),
+                    None => (rest.to_string(), String::new()),
+                };
+                opts.push(OptDoc { name, default, ..Default::default() });
+            } else if let Some(rest) = trimmed.strip_prefix('-') {
+                if let Some(o) = opts.last_mut() {
+                    let rest = rest.trim();
+                    if let Some(d) = rest.strip_prefix("doc:") {
+                        o.doc = d.trim().to_string();
+                    } else if let Some(d) = rest.strip_prefix("default:") {
+                        o.default = d.trim().to_string();
+                    } else {
+                        o.notes.push(rest.to_string());
+                    }
+                }
+            }
         }
     }
     flush(&mut key, &mut doc, &mut opts, &mut entries);
@@ -378,22 +466,26 @@ impl Vocab {
             .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
             .filter(|w| w.starts_with(':') && w.len() > 1 && !w.contains("::"))
             .filter_map(|w| self.get(w))
-            .filter(|e| !e.opts.is_empty())
+            .filter(|e| !e.opt_docs.is_empty())
             .next_back();
         let Some(entry) = entry else {
             return Vec::new();
         };
         let mut out: Vec<(String, String)> = entry
-            .opts
+            .opt_docs
             .iter()
-            .filter_map(|opt| {
-                let (name, default) = opt.split_once(':')?;
-                let name = name.trim();
-                name.starts_with(prefix)
-                    .then(|| (format!("{name}:"), default.trim().to_string()))
-            })
+            .filter(|o| o.name.trim_end_matches(':').starts_with(prefix))
+            .map(|o| (o.name.clone(), o.default.clone()))
             .collect();
         out.truncate(limit);
+        out
+    }
+
+    /// Every entry of one kind, label-sorted — the Help pane's category
+    /// browser (Qt help-tab parity).
+    pub fn by_kind(&self, kind: VocabKind) -> Vec<&VocabEntry> {
+        let mut out: Vec<&VocabEntry> = self.entries.iter().filter(|e| e.kind == kind).collect();
+        out.sort_by(|a, b| a.label.cmp(&b.label));
         out
     }
 
@@ -458,10 +550,54 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, ":dull_bell");
         assert_eq!(entries[0].doc, "A simple dull discordant bell sound.");
-        assert_eq!(entries[0].opts, vec!["amp: 1"]);
+        // Legacy one-liner opt: `* amp: 1`.
+        assert_eq!(entries[0].opt_docs.len(), 1);
+        assert_eq!(entries[0].opt_docs[0].name, "amp:");
+        assert_eq!(entries[0].opt_docs[0].default, "1");
         assert_eq!(entries[1].label, ":tb303");
         assert_eq!(entries[1].doc, "Emulation of the classic acid bass machine.");
-        assert!(entries[1].opts.is_empty());
+        assert!(entries[1].opt_docs.is_empty());
+    }
+
+    #[test]
+    fn parses_real_format_opt_docs() {
+        // The shipped cheatsheets document each opt with `- doc/default/…`
+        // sub-lines — the format the Qt help renders.
+        let md = "## Dull Bell\n\n### Key:\n  :dull_bell\n\n### Doc:\n  A bell.\n\n### Opts:\n  * note:\n    - doc: Note to play.\n    - default: 52\n    - constraints: must be zero or greater\n    - May be changed whilst playing\n  * amp:\n    - doc: The amplitude.\n    - default: 1\n";
+        let entries = parse_cheatsheet(md, VocabKind::Synth);
+        assert_eq!(entries.len(), 1);
+        let opts = &entries[0].opt_docs;
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].name, "note:");
+        assert_eq!(opts[0].default, "52");
+        assert_eq!(opts[0].doc, "Note to play.");
+        assert_eq!(
+            opts[0].notes,
+            vec!["constraints: must be zero or greater", "May be changed whilst playing"]
+        );
+        assert_eq!(opts[1].name, "amp:");
+        assert_eq!(opts[1].default, "1");
+
+        // Markdown detail view carries all of it, uncapped.
+        let md = entries[0].doc_markdown();
+        assert!(md.contains("`:dull_bell`"));
+        assert!(md.contains("**`note:`** *(default 52)* — Note to play."));
+        assert!(md.contains("must be zero or greater"));
+    }
+
+    #[test]
+    fn by_kind_lists_sorted_categories() {
+        let vocab = Vocab {
+            entries: vec![
+                VocabEntry::new(":tb303", VocabKind::Synth, ""),
+                VocabEntry::new(":beep", VocabKind::Synth, ""),
+                VocabEntry::new("play", VocabKind::Func, ""),
+            ],
+        };
+        let synths: Vec<&str> =
+            vocab.by_kind(VocabKind::Synth).iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(synths, vec![":beep", ":tb303"]);
+        assert_eq!(vocab.by_kind(VocabKind::Sample).len(), 0);
     }
 
     #[test]
@@ -524,14 +660,25 @@ and more.",
         assert!(vocab.entries.len() > 300, "suspiciously small vocab: {}", vocab.entries.len());
         // fx cheatsheet keys are :fx_* — completion after with_fx types ':'
         assert!(labels.iter().any(|l| l.starts_with(":fx_") || l.starts_with(":reverb")), "fx missing");
+        // Real cheatsheets use `- default:` sub-lines — a real synth must have
+        // fully-documented opts (defaults were silently empty before the
+        // structured OptDoc parse).
+        let tb = vocab.get(":tb303").expect("tb303");
+        let cutoff = tb.opt_docs.iter().find(|o| o.name == "cutoff:").expect("cutoff opt");
+        assert!(!cutoff.default.is_empty(), "opt default lost");
+        assert!(!cutoff.doc.is_empty(), "opt doc lost");
+    }
+
+    fn opt(name: &str, default: &str) -> OptDoc {
+        OptDoc { name: name.into(), default: default.into(), ..Default::default() }
     }
 
     #[test]
     fn opt_completions_follow_the_nearest_symbol() {
         let mut tb303 = VocabEntry::new(":tb303", VocabKind::Synth, "");
-        tb303.opts = vec!["cutoff: 100".into(), "res: 0.9".into(), "amp: 1".into()];
+        tb303.opt_docs = vec![opt("cutoff:", "100"), opt("res:", "0.9"), opt("amp:", "1")];
         let mut reverb = VocabEntry::new(":reverb", VocabKind::Fx, "");
-        reverb.opts = vec!["mix: 0.4".into(), "room: 0.6".into()];
+        reverb.opt_docs = vec![opt("mix:", "0.4"), opt("room:", "0.6")];
         let vocab = Vocab {
             entries: vec![tb303, reverb, VocabEntry::new(":bd_haus", VocabKind::Sample, "")],
         };
