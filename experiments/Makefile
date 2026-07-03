@@ -6,6 +6,7 @@
 #   make coverage  rust-core line coverage (gated >=90 in CI; ~95 today)
 #   make package   self-contained bundle + AppDir + AppImage, all smoke-tested
 #   make e2e       full-runtime checks against the real engine
+#   make latency   boot/run/scope/cue latency baseline vs ceilings
 #   make qt        one-time Qt oracle build (auto-generates ruby_help.h)
 #
 # Toolchains: rust-core builds on stable; gpui-spike pins its own nightly via
@@ -18,7 +19,7 @@ REPO  := $(abspath $(ROOT)/..)
 APT_DEPS := libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libasound2-dev libjack-jackd2-dev
 
-.PHONY: deps run test coverage package e2e qt clean
+.PHONY: deps run test coverage package e2e latency qt clean
 
 deps:
 	@missing=""; \
@@ -48,6 +49,11 @@ package:
 e2e:
 	cd $(ROOT)/rust-core && cargo run --example supervisor_check
 	cd $(ROOT)/rust-core && cargo run --example record_check
+
+# Latency baseline (foundation harness): prints the numbers that define the
+# "live" feel and fails past its ceilings — ratchet them down over time.
+latency:
+	cd $(ROOT)/rust-core && cargo run --example latency_probe
 
 # The Qt oracle. linux-config.sh now self-heals the ruby_help.h footgun.
 qt:

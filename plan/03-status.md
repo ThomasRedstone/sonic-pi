@@ -383,6 +383,36 @@ hasn't started.**
 **Qt retirement** (roadmap exit criteria): sustained side-by-side daily use
 after Tier 1 lands. Tier 1's exit test starts that clock.
 
+## THE PLAN v2 — foundation phase (2026-07-03, Tiers 1+2 done)
+
+Agreed order (Tom): harness → cross-platform → editor.
+
+1. **Conformance + latency harness** — the foundation for foundations.
+   a) `latency_probe` example: boot the real runtime, measure the numbers
+      that define "live" feel — run→first-reply, run→scope-activity,
+      external-cue→/incoming/osc. Thresholds generous at first; ratchet.
+   b) Scripted-session conformance: drive run/stop/volume/devices/record
+      against the real runtime, assert the expected reply families arrive
+      (extends supervisor_check into an action-oriented suite).
+   c) Optional later: automated Qt A/B replay — do it while Qt is still
+      installed and trusted; that window closes at retirement.
+2. **Cross-platform core** (prep for mac/win WITHOUT the machines):
+   - Abstract Linux-isms: PR_SET_PDEATHSIG (mac: kqueue EVFILT_PROC or
+     watchdog; win: Job Objects), /dev/shm naming, client-side window
+     controls (only needed on GNOME Wayland).
+   - KEY INSIGHT: GitHub Actions has macos + windows runners — rust-core
+     can build + unit-test on all three OSes in CI today. The local
+     machines are only needed for audio/GUI smoke.
+3. **Editor foundation** (upstream gpui-component): glyph metrics
+   (magnifier a11y), completion-widget API (piano/slider), folding,
+   bracket matching, multi-caret — prioritise by what daily use surfaces.
+
+Spider-boot side-quest (cheap, benchmark first): MRI 3.3 `--yjit` flag on
+the bundled ruby; YARV bytecode precompile (bootsnap-style) for the
+require-heavy boot; pre-warmed fork later. JRuby evaluated and REJECTED:
+solves throughput/parallelism we don't need (audio lives in SuperSonic),
+worsens boot time + bundle size, C-ext/FFI risk.
+
 ## Done 2026-07-02 (earlier session — 13 tests)
 
 - **Clean shutdown implemented**: `Context::on_app_quit` → `Backend::shutdown()`
