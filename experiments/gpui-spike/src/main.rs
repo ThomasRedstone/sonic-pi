@@ -19,7 +19,7 @@ mod store;
 mod vocab;
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -27,7 +27,7 @@ use std::time::Duration;
 use vocab::{word_prefix_at, Vocab, VocabKind};
 
 // Live-coding keyboard shortcuts (bound in `main`, handled on the root view).
-actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer, ZoomIn, ZoomOut, ZoomReset]);
+actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer, ZoomIn, ZoomOut, ZoomReset, OpenFile, SaveFile, SaveFileAs]);
 
 /// Header commands — one identity shared by mouse clicks, keyboard actions
 /// and screen-reader Click actions.
@@ -36,6 +36,8 @@ enum Cmd {
     Run,
     Stop,
     Rec,
+    Open,
+    Save,
     Comment,
     Align,
     ScopePause,
@@ -126,6 +128,10 @@ impl LogLine {
         LogLine { run: None, error: false, indent: false, debug: false, text: text.into() }
     }
 
+    fn error(text: impl Into<String>) -> LogLine {
+        LogLine { run: None, error: true, indent: false, debug: false, text: text.into() }
+    }
+
     fn debug(text: impl Into<String>) -> LogLine {
         LogLine { run: None, error: false, indent: false, debug: true, text: text.into() }
     }
@@ -212,6 +218,14 @@ fn app_root() -> PathBuf {
         }
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app")
+}
+
+/// Save-dialog filename suggestion: keep the buffer's known name, else
+/// `buffer-N.rb`. Pure → unit-tested.
+fn suggested_save_name(known: Option<&Path>, buffer_ix: usize) -> String {
+    known
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| format!("buffer-{}.rb", buffer_ix + 1))
 }
 
 /// Parse Spider's rational cue timestamp (`"num/den"`, in seconds) to f64.
@@ -363,6 +377,18 @@ mod tests {
     }
 
     use super::{byte_to_text_position, line_runs, parse_cue_time, word_starts};
+
+    #[test]
+    fn save_name_prefers_the_known_filename() {
+        use super::suggested_save_name;
+        use std::path::Path;
+        assert_eq!(suggested_save_name(None, 0), "buffer-1.rb");
+        assert_eq!(suggested_save_name(None, 9), "buffer-10.rb");
+        assert_eq!(
+            suggested_save_name(Some(Path::new("/tmp/riff.rb")), 3),
+            "riff.rb"
+        );
+    }
 
     #[test]
     fn parses_rational_cue_timestamps() {
@@ -1117,6 +1143,9 @@ enum ScopeSource {
 
 struct SonicSpike {
     buffers: Vec<Entity<InputState>>,
+    /// Where each buffer was opened from / last saved to (Ctrl+S reuses it;
+    /// buffers never opened or saved prompt on save).
+    file_paths: Vec<Option<PathBuf>>,
     active: usize,
     cues: Entity<InputState>,
     scope: ScopeSource,
@@ -1368,6 +1397,7 @@ impl SonicSpike {
 
         Self {
             buffers,
+            file_paths: vec![None; BUFFER_COUNT],
             active: 0,
             cues,
             scope: ScopeSource::Detached,
@@ -1493,6 +1523,85 @@ impl SonicSpike {
         let overflow = self.spectrum_rolling.len().saturating_sub(spectrum::FRAME_SAMPLES);
         if overflow > 0 {
             self.spectrum_rolling.drain(0..overflow);
+        }
+    }
+
+    /// Tier 1.3: open a `.rb`/text file into the active buffer via the
+    /// platform's native file dialog. The chosen path sticks to the buffer,
+    /// so a later Ctrl+S saves straight back to it.
+    fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let text = std::fs::read_to_string(&path);
+            let _ = this.update_in(cx, |this, window, cx| {
+                let i = this.active;
+                match text {
+                    Ok(text) => {
+                        this.buffers[i].update(cx, |s, cx| s.set_value(text, window, cx));
+                        this.file_paths[i] = Some(path.clone());
+                        this.log.push(LogLine::info(format!(
+                            "→ Opened {} into buffer {}",
+                            path.display(),
+                            i + 1
+                        )));
+                    }
+                    Err(e) => this
+                        .log
+                        .push(LogLine::error(format!("Open {} failed: {e}", path.display()))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Save the active buffer. With a known path (and `!save_as`) it writes
+    /// straight there; otherwise the native save dialog picks the target.
+    fn save_file(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let i = self.active;
+        if !save_as {
+            if let Some(path) = self.file_paths[i].clone() {
+                self.write_buffer_to(i, &path, cx);
+                cx.notify();
+                return;
+            }
+        }
+        let dir = self.file_paths[i]
+            .as_ref()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let suggested = suggested_save_name(self.file_paths[i].as_deref(), i);
+        let rx = cx.prompt_for_new_path(&dir, Some(&suggested));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.file_paths[i] = Some(path.clone());
+                this.write_buffer_to(i, &path, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn write_buffer_to(&mut self, i: usize, path: &Path, cx: &Context<Self>) {
+        let text = self.buffers[i].read(cx).value().to_string();
+        match std::fs::write(path, &text) {
+            Ok(()) => self.log.push(LogLine::info(format!(
+                "→ Saved buffer {} → {}",
+                i + 1,
+                path.display()
+            ))),
+            Err(e) => {
+                self.log.push(LogLine::error(format!("Save {} failed: {e}", path.display())))
+            }
         }
     }
 
@@ -1658,6 +1767,26 @@ impl SonicSpike {
                     cx,
                 )
             })
+            .child(self.a11y_ctl(
+                "a11y-open",
+                "Open a file into the current buffer",
+                Cmd::Open,
+                Button::new("open-file")
+                    .label("📂")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Open, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
+                "a11y-save",
+                "Save the current buffer to a file",
+                Cmd::Save,
+                Button::new("save-file")
+                    .label("💾")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Save, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
             .child(self.a11y_ctl(
                 "a11y-comment",
                 "Toggle comment on selection",
@@ -2006,6 +2135,8 @@ impl SonicSpike {
             Cmd::Run => self.run_active(cx),
             Cmd::Stop => self.stop_all(cx),
             Cmd::Rec => self.toggle_record(cx),
+            Cmd::Open => self.open_file(window, cx),
+            Cmd::Save => self.save_file(false, window, cx),
             Cmd::Comment => self.comment_active(window, cx),
             Cmd::Align => self.align_active(window, cx),
             Cmd::ScopePause => {
@@ -2550,6 +2681,15 @@ impl Render for SonicSpike {
                 let next = (this.active + 1) % this.buffers.len();
                 this.select_buffer(next, cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &OpenFile, window, cx| this.open_file(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SaveFile, window, cx| this.save_file(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SaveFileAs, window, cx| this.save_file(true, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(1.0, cx)))
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(-1.0, cx)))
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.zoom(0.0, cx)))
@@ -2591,6 +2731,9 @@ fn main() {
             KeyBinding::new("alt-m", AlignBuffer, None),
             KeyBinding::new("alt-]", NextBuffer, None),
             KeyBinding::new("alt-[", PrevBuffer, None),
+            KeyBinding::new("ctrl-o", OpenFile, None),
+            KeyBinding::new("ctrl-s", SaveFile, None),
+            KeyBinding::new("ctrl-shift-s", SaveFileAs, None),
             KeyBinding::new("ctrl-=", ZoomIn, None),
             KeyBinding::new("ctrl--", ZoomOut, None),
             KeyBinding::new("ctrl-0", ZoomReset, None),
