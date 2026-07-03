@@ -10,13 +10,9 @@
 //! the display ballistics (instant attack, timed release, peak-hold) the C++
 //! `AudioProcessor` applies before handing frames to the client.
 
-// POSIX shm only — the Windows CreateFileMapping backend is future work
-// (plan v2, cross-platform); everything else in the crate is portable.
-#[cfg(unix)]
 pub mod shm;
 pub mod spectrum;
 
-#[cfg(unix)]
 pub use shm::{
     metrics_idx, MetricsReader, NodeInfo, NodeTreeReader, ScopeReader, ScopeSlotReader,
     ScopeWriter, SCOPE_SHM_NAME, SHM_AUDIO_CHANNELS, SHM_AUDIO_FRAMES, SHM_AUDIO_SAMPLE_RATE,
@@ -37,13 +33,10 @@ pub struct ProcessedAudio {
 
 /// Reads the engine's scope shared memory and (eventually) produces
 /// `ProcessedAudio`. The shm read half is real; the FFT/spectrum half is TODO.
-/// POSIX-shm-backed, so unix-only like the [`shm`] module.
-#[cfg(unix)]
 pub struct AudioProcessor {
     scope: Option<ScopeReader>,
 }
 
-#[cfg(unix)]
 impl AudioProcessor {
     pub fn new() -> Self {
         AudioProcessor { scope: None }
@@ -71,7 +64,6 @@ impl AudioProcessor {
     }
 }
 
-#[cfg(unix)]
 impl Default for AudioProcessor {
     fn default() -> Self {
         Self::new()

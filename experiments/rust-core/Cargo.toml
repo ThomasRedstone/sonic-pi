@@ -8,8 +8,19 @@ description = "Phase 2 scaffold: a Rust reimplementation of the C++ app/api laye
 [dependencies]
 rosc = "0.11"
 thiserror = "1"
-libc = "0.2"   # POSIX shm_open/mmap for the scope shared-memory reader
 rustfft = "6"  # spectrum analysis (KissFFT replacement, see AudioProcessor)
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"   # POSIX shm_open/mmap + supervisor signals
+
+[target.'cfg(windows)'.dependencies]
+# Named-section shared memory (CreateFileMappingW/MapViewOfFile) — the
+# Windows half of audio::shm's Mapping.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+] }
 
 # Runnable demonstration of the contract without a full Sonic Pi runtime:
 #   cargo run --example contract_demo

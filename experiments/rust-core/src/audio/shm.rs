@@ -36,6 +36,7 @@
 // whole module is inherently unsafe shm plumbing, so we allow it here.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[cfg(unix)]
 use std::ffi::CString;
 use std::io;
 use std::mem::offset_of;
@@ -56,9 +57,10 @@ pub const SHM_AUDIO_MASTER_SLOT: u32 = 0;
 /// Segment header MAGIC (0x5C09E006 = "unified layout + Link metrics").
 pub const SEGMENT_MAGIC: u32 = 0x5C09_E006;
 
-/// True once a POSIX shm segment named `name` exists. The portable
-/// readiness probe (checking `/dev/shm/<name>` only works on Linux;
-/// macOS shm segments have no filesystem presence).
+/// True once a shared-memory segment named `name` exists — the portable
+/// engine-readiness probe (checking `/dev/shm/<name>` only works on Linux;
+/// macOS segments have no filesystem presence, Windows uses named sections).
+#[cfg(unix)]
 pub fn segment_exists(name: &str) -> bool {
     let Ok(c) = std::ffi::CString::new(name) else { return false };
     let fd = unsafe { libc::shm_open(c.as_ptr(), libc::O_RDONLY, 0) };
@@ -67,6 +69,22 @@ pub fn segment_exists(name: &str) -> bool {
         true
     } else {
         false
+    }
+}
+
+/// Windows: probe by opening the named section read-only.
+#[cfg(windows)]
+pub fn segment_exists(name: &str) -> bool {
+    use windows_sys::Win32::System::Memory::{OpenFileMappingW, FILE_MAP_READ};
+    let wname = wide_name(name);
+    unsafe {
+        let h = OpenFileMappingW(FILE_MAP_READ, 0, wname.as_ptr());
+        if h.is_null() {
+            false
+        } else {
+            windows_sys::Win32::Foundation::CloseHandle(h);
+            true
+        }
     }
 }
 
@@ -137,10 +155,17 @@ pub struct ShmSegmentHeader {
     pub native_stats_offset: u32,
 }
 
-// ── POSIX shared-memory mapping (create / open existing) ─────────────────────
+// ── Shared-memory mapping (create / open existing) ──────────────────────────
+//
+// Mirrors `shm_handle` + `shm_open_existing`/`shm_close` in server_shm.hpp,
+// including its platform split: POSIX shm_open/mmap vs Windows
+// CreateFileMapping/MapViewOfFile. SuperSonic passes segment names WITHOUT a
+// leading slash on Windows and prepends "/" itself on POSIX — our callers use
+// the POSIX spelling ("/SuperSonic_<port>"), so the Windows half strips it.
 
 /// An mmap'd shared-memory segment. Unmaps (and, if we created it, unlinks) on
-/// drop. Mirrors `shm_handle` + `shm_open_existing`/`shm_close` in server_shm.hpp.
+/// drop.
+#[cfg(unix)]
 struct Mapping {
     ptr: *mut u8,
     size: usize,
@@ -149,6 +174,7 @@ struct Mapping {
     owner: bool,
 }
 
+#[cfg(unix)]
 impl Mapping {
     fn create(name: &str, size: usize) -> io::Result<Mapping> {
         let cname = CString::new(name).unwrap();
@@ -222,6 +248,7 @@ impl Mapping {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Mapping {
     fn drop(&mut self) {
         unsafe {
@@ -233,6 +260,107 @@ impl Drop for Mapping {
             }
             if self.owner {
                 libc::shm_unlink(self.name.as_ptr());
+            }
+        }
+    }
+}
+
+/// Windows half: named file-mapping objects (session-local namespace, same
+/// bare names SuperSonic creates). Sections are refcounted kernel objects —
+/// no unlink; the last CloseHandle releases them.
+#[cfg(windows)]
+struct Mapping {
+    ptr: *mut u8,
+    size: usize,
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+fn wide_name(name: &str) -> Vec<u16> {
+    // POSIX spelling → Windows object name (strip the leading '/').
+    let bare = name.strip_prefix('/').unwrap_or(name);
+    bare.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+impl Mapping {
+    fn create(name: &str, size: usize) -> io::Result<Mapping> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
+        };
+        let wname = wide_name(name);
+        unsafe {
+            let handle = CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null(),
+                PAGE_READWRITE,
+                (size as u64 >> 32) as u32,
+                size as u32,
+                wname.as_ptr(),
+            );
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size);
+            if view.Value.is_null() {
+                let e = io::Error::last_os_error();
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return Err(e);
+            }
+            Ok(Mapping { ptr: view.Value as *mut u8, size, handle })
+        }
+    }
+
+    fn open(name: &str) -> io::Result<Mapping> {
+        use windows_sys::Win32::System::Memory::{
+            MapViewOfFile, OpenFileMappingW, VirtualQuery, FILE_MAP_ALL_ACCESS,
+            MEMORY_BASIC_INFORMATION,
+        };
+        let wname = wide_name(name);
+        unsafe {
+            let handle = OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, wname.as_ptr());
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+            if view.Value.is_null() {
+                let e = io::Error::last_os_error();
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return Err(e);
+            }
+            // Section size: like server_shm.hpp, VirtualQuery's RegionSize
+            // (page-rounded — the self-describing header carries the real
+            // layout, this only backs the bounds checks).
+            let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+            let n = VirtualQuery(
+                view.Value,
+                &mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            );
+            if n == 0 {
+                let e = io::Error::last_os_error();
+                windows_sys::Win32::System::Memory::UnmapViewOfFile(view);
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return Err(e);
+            }
+            Ok(Mapping { ptr: view.Value as *mut u8, size: info.RegionSize, handle })
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Memory::{UnmapViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS};
+        unsafe {
+            if !self.ptr.is_null() {
+                UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: self.ptr as *mut core::ffi::c_void,
+                });
+            }
+            if !self.handle.is_null() {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
             }
         }
     }

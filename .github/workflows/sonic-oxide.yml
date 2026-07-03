@@ -14,6 +14,11 @@ on:
       - "experiments/**"
       - ".github/workflows/sonic-oxide.yml"
 
+# Rapid push batches shouldn't stack runs — only the newest matters.
+concurrency:
+  group: sonic-oxide-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -35,35 +40,9 @@ jobs:
         working-directory: experiments/rust-core
         run: cargo llvm-cov --all-targets --fail-under-lines 90 --summary-only
 
-  # Cross-platform core (plan v2): rust-core must stay green on macOS and
-  # keep compiling on Windows (shm backend pending there). These runners ARE
-  # the mac/win machines until real hardware shows up. Static commands only.
-  rust-core-macos:
-    name: rust-core (macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: experiments/rust-core
-      - name: Unit tests (integration/e2e need the runtime — Linux-only for now)
-        working-directory: experiments/rust-core
-        run: cargo test --lib
-
-  rust-core-windows:
-    name: rust-core (Windows, check only)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: experiments/rust-core
-      - name: Compile check (audio::shm is cfg(unix)-gated)
-        working-directory: experiments/rust-core
-        run: cargo check
-
+  # macOS/Windows verification lives in sonic-oxide-xplat.yml — triggered
+  # only on rust-core changes or by hand (those runners cost 10x/2x Linux
+  # minutes; don't burn them on spike/doc pushes).
   gpui-spike:
     name: gpui-spike (nightly, per rust-toolchain.toml)
     runs-on: ubuntu-latest

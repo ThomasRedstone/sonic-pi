@@ -1,0 +1,48 @@
+# Sonic Oxide cross-platform verification — macOS + Windows runners stand in
+# for real hardware (plan v2 item 2). These runners burn 10x (Windows 2x) the
+# Linux minute rate, so this workflow triggers ONLY on rust-core changes (the
+# portable layer) or by hand — not on spike/plan/doc pushes.
+# No untrusted event data is interpolated into run commands.
+name: Sonic Oxide xplat
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "experiments/rust-core/**"
+      - ".github/workflows/sonic-oxide-xplat.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: xplat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-core-macos:
+    name: rust-core (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/rust-core
+      - name: Unit tests (integration/e2e need the runtime — Linux-only for now)
+        working-directory: experiments/rust-core
+        run: cargo test --lib
+
+  rust-core-windows:
+    name: rust-core (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/rust-core
+      - name: Unit tests (exercises the CreateFileMapping shm backend)
+        working-directory: experiments/rust-core
+        run: cargo test --lib

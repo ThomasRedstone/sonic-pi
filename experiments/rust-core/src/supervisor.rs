@@ -206,15 +206,10 @@ impl Supervisor {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(15);
-        #[cfg(unix)]
+        // segment_exists is platform-split (shm_open probe / named-section
+        // probe), so this readiness wait is portable as-is.
         let engine_up =
             || crate::audio::shm::segment_exists(&format!("/SuperSonic_{scsynth}"));
-        // Windows: no POSIX shm — until the CreateFileMapping backend lands,
-        // readiness falls back to a fixed grace period.
-        #[cfg(not(unix))]
-        let boot_at = Instant::now();
-        #[cfg(not(unix))]
-        let engine_up = || boot_at.elapsed() > Duration::from_secs(5);
         let deadline = Instant::now() + Duration::from_secs(boot_timeout);
         while !engine_up() {
             if Instant::now() >= deadline {
