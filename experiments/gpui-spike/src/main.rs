@@ -55,6 +55,7 @@ use gpui_component::{
     highlighter::{Diagnostic, DiagnosticSeverity},
     input::{Input, InputState, Position},
     resizable::{h_resizable, resizable_panel},
+    slider::{Slider, SliderEvent, SliderState},
     v_flex,
 };
 use gpui_component_assets::Assets;
@@ -687,6 +688,13 @@ impl Backend {
         }
     }
 
+    /// Master volume (0.0..=2.0), sent to Spider (real backend only).
+    fn set_volume(&self, amp: f32) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_mixer_amp(amp, false);
+        }
+    }
+
     /// Set the Link tempo (real backend only).
     fn set_bpm(&self, bpm: f32) {
         if let Backend::Real { session, .. } = self {
@@ -1159,6 +1167,8 @@ struct SonicSpike {
     settings_open: bool,
     /// Previous tap-tempo press, for the interval → BPM conversion.
     last_tap: Option<std::time::Instant>,
+    /// Master volume slider (0..2, default 1 — mirrors the Qt preamp).
+    volume: Entity<SliderState>,
     /// Path of the in-flight recording, if any.
     recording: Option<PathBuf>,
     /// Help pane: the loaded vocabulary doubles as the docs index.
@@ -1219,6 +1229,17 @@ impl SonicSpike {
         });
         let help_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search synths, samples, fns…"));
+        let volume = cx.new(|_| {
+            SliderState::new().min(0.0).max(2.0).step(0.05).default_value(1.0)
+        });
+        cx.subscribe(&volume, |this, _, ev: &SliderEvent, _| {
+            if let SliderEvent::Change(v) = ev {
+                if let gpui_component::slider::SliderValue::Single(amp) = v {
+                    this.backend.set_volume(*amp);
+                }
+            }
+        })
+        .detach();
 
         let incoming: Arc<Mutex<Vec<ClientEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let (backend, status) = Backend::connect(incoming.clone());
@@ -1374,6 +1395,7 @@ impl SonicSpike {
             settings_open: false,
             last_tap: None,
             recording: None,
+            volume,
             vocab,
             i18n,
             help_open: false,
@@ -1574,6 +1596,14 @@ impl SonicSpike {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(metrics_text.unwrap_or_default()),
+            )
+            .child(
+                div()
+                    .id("volume")
+                    .role(Role::Slider)
+                    .aria_label("Master volume")
+                    .w(px(110.))
+                    .child(Slider::new(&self.volume)),
             )
             .child(
                 div()

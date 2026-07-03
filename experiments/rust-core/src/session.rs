@@ -133,6 +133,11 @@ impl Session {
         self.spider.send(&protocol::out::ping(self.token, "core/1/hello"))
     }
 
+    /// Set the master volume (`/mixer-amp`, amp 0.0..=2.0 like the Qt slider).
+    pub fn set_mixer_amp(&self, amp: f32, silent: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::mixer_amp(self.token, amp, silent))
+    }
+
     /// Send a raw message straight to SuperSonic (e.g. `/clock/*`,
     /// `/supersonic/*`).
     pub fn send_to_supersonic(&self, m: &OscMessage) -> Result<(), CoreError> {

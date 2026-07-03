@@ -71,12 +71,14 @@ fn session_wires_all_senders_and_the_incoming_server() {
     session.run("buffer0", "play 60").unwrap();
     session.stop().unwrap();
     session.ping().unwrap();
+    session.set_mixer_amp(1.5, false).unwrap();
     wait_for(
         || {
             let a = addrs(&spider_rx);
             a.iter().any(|x| x == protocol::addr::SAVE_AND_RUN_BUFFER)
                 && a.iter().any(|x| x == protocol::addr::STOP_ALL_JOBS)
                 && a.iter().any(|x| x == protocol::addr::PING)
+                && a.iter().any(|x| x == protocol::addr::MIXER_AMP)
         },
         "spider messages",
     );

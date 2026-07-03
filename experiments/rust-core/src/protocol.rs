@@ -20,6 +20,7 @@ pub mod addr {
     pub const LOAD_BUFFER: &str = "/load-buffer";
     pub const SAVE_BUFFER: &str = "/save-buffer";
     pub const BUFFER_NEWLINE_AND_INDENT: &str = "/buffer-newline-and-indent";
+    pub const MIXER_AMP: &str = "/mixer-amp";
     pub const SET_GLOBAL_TIMEWARP: &str = "/set-global-timewarp";
 
     // ── Outgoing: core → Boot daemon (port `daemon`) ─────────────────────────
@@ -157,6 +158,16 @@ pub mod out {
                 OscType::Int(buffer_size),
                 OscType::String(input.to_string()),
             ],
+        )
+    }
+
+    /// `/mixer-amp [token] [amp] [silent]` — the master volume, sent to
+    /// Spider (mirrors `MainWindow::changeSystemPreAmp`; the Qt slider maps
+    /// 0..100 → 0.0..2.0).
+    pub fn mixer_amp(token: i32, amp: f32, silent: bool) -> OscMessage {
+        msg(
+            addr::MIXER_AMP,
+            vec![OscType::Int(token), OscType::Float(amp), OscType::Int(silent as i32)],
         )
     }
 
