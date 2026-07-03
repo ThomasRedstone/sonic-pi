@@ -295,23 +295,30 @@ lifecycle E2E clean; visual drag check is the user's.
    asserted).
 2. ✅ **Editor font size** (2026-07-03) — Ctrl+=/-/0, 8..40 clamp, persisted
    in prefs.conf (`store::load_prefs`/`save_prefs`, round-trip tested).
-3. **File open/save** — GPUI native path prompts (`prompt_for_paths` /
-   `prompt_for_new_path`) to load/save `.rb` files into/from the active
-   buffer; recent-files list later.
-4. **Scope modes** — stereo + mirror + Lissajous like Qt's ScopeWindow.
-   Needs `ScopeSlotReader::pull_latest_stereo` (planar ch1 already sits in
-   the slot; we read ch0 only).
-5. **Editor built-ins audit** — verify undo/redo & find work (gpui-component
-   ships them); bind/document whatever's missing.
+3. ✅ **File open/save** (2026-07-03) — native dialogs (Ctrl+O open into
+   active buffer, Ctrl+S save [reuses the buffer's known path], Ctrl+Shift+S
+   save-as; 📂/💾 header buttons, a11y-wired). Errors land red in the Log.
+4. ✅ **Scope modes** (2026-07-03) — mono/stereo/mirror/Lissajous/spectrum,
+   one header button cycles. `ScopeSlotReader::pull_latest_stereo` in
+   rust-core (planar ch1; mono slots mirror ch0) — synthetic-segment tested.
+   Loopback fake ring mirrors L→R. Demo signal is sin/cos (Lissajous circle).
+5. ✅ **Editor built-ins audit** (2026-07-03) — undo/redo/find were already
+   live: `gpui_component::init` binds ctrl-z/ctrl-y/ctrl-f in the focused-
+   Input context, and `code_editor()` sets `searchable` (find+replace panel).
+   Added the missing conventional alias: ctrl-shift-z → Redo. Hands-on
+   verification folded into the Tier-1 exit rehearsal.
 
 Exit test for Tier 1: a full performance rehearsal on Oxide with the Qt app
-closed, no reach-for-the-other-app moments.
+closed, no reach-for-the-other-app moments. **STILL PENDING — the clock
+hasn't started.**
 
 ### Tier 2 — product gaps (rough order)
 
-1. **Tutorial + examples browser** — the teaching soul: render
-   `etc/doc/tutorial/*.md` (markdown pane, chapter nav) + `etc/examples`
-   loader. Biggest single gap to "this is Sonic Pi".
+1. ✅ **Tutorial + examples browser** (2026-07-03) — 📖 pane: all 85
+   chapters (filename order, titles from first line) → gpui-component
+   `text::markdown` view; 34 examples by category, click loads into the
+   active buffer. Loaders in `tutorial.rs`, real-repo tested.
+   package-linux.sh now ships etc/doc/tutorial + etc/examples.
 2. **Settings breadth** — audio driver picker, safe mode, MIDI enable +
    default channel, OSC network opts (external IPs), theme catalogue,
    language picker (i18n mechanism is live).
@@ -353,6 +360,23 @@ after Tier 1 lands. Tier 1's exit test starts that clock.
 
 (The earlier session's priority list is superseded by "Next priorities" above;
 the Phase-0 Qt copy fix still needs its one-time Qt build + smoke test.)
+
+## Done 2026-07-03 (Tier 1 complete + tutorial; 29 spike + 34 core tests)
+
+- **Live-use fixes** (user feedback): dock tabs said "Unnamed" — the Panel
+  trait's default `title()`; the oxide_panel! macro now takes a title (via
+  i18n) and sets `closable(false)` (no re-open affordance exists yet).
+  **Copy All** buttons on Cues + Log (selection copying is useless while
+  set_value rewrites the pane); Log pane now scrolls the whole 200-line
+  scrollback (newest-first, so the latest row needs no scrolling).
+- Tier 1.3/1.4/1.5 + Tier 2.1 — see the plan lists above.
+- Gotcha: `gen` is a reserved keyword in edition 2024 — rustc suggests
+  r#gen; just name closures something else.
+- SuperSonic submodule sits at c4304ce2a in the working tree (uncommitted,
+  Tom's) — shm MAGIC re-checked vs server_shm.hpp: still 0x5C09E006, matches
+  rust-core. Commit the pointer when convenient.
+- Remotes: origin = ThomasRedstone/sonic-pi (the fork, push target),
+  upstream = sonic-pi-net/sonic-pi.
 
 ## Environment gotchas (will bite a fresh session)
 
