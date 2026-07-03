@@ -406,6 +406,18 @@ Agreed order (Tom): harness → cross-platform → editor.
 3. **Editor foundation** (upstream gpui-component): glyph metrics
    (magnifier a11y), completion-widget API (piano/slider), folding,
    bracket matching, multi-caret — prioritise by what daily use surfaces.
+   FINDING (2026-07-03): glyph metrics need NO upstream change —
+   `InputState::range_to_bounds(byte_range) -> Option<Bounds<Pixels>>` is
+   public (window coords; None off-viewport, a natural visible-lines
+   gate), plus public `line_height()`. Plan: per-char bounds for visible
+   runs → AccessKit `character_positions`/`character_widths`. Open
+   questions before building: (a) per-frame cost (~4k range_to_bounds
+   calls on a full screen — measure), (b) whether GPUI clobbers node
+   bounds set in write_a11y_info (runs are zero-size boxes — explicit
+   bounds must survive), (c) AT-SPI verify needs the Orca session
+   (speaks aloud — coordinate with Tom). The piano/slider completion
+   widgets remain genuinely upstream-blocked (completion-menu rendering
+   API).
 
 Spider-boot side-quest (cheap, benchmark first): MRI 3.3 `--yjit` flag on
 the bundled ruby; YARV bytecode precompile (bootsnap-style) for the
