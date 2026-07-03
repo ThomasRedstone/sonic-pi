@@ -254,6 +254,25 @@ fn run_preamble(safe: bool, external_synths: bool, timing: bool, midi_channel: &
     p
 }
 
+/// Recent-files list codec for prefs.conf (single line, tab-separated —
+/// prefs values only trim end whitespace). Newest first, deduped, capped.
+const RECENT_CAP: usize = 8;
+
+fn decode_recent(value: &str) -> Vec<PathBuf> {
+    value.split('\t').filter(|s| !s.is_empty()).map(PathBuf::from).collect()
+}
+
+fn encode_recent(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\t")
+}
+
+fn push_recent(mut recent: Vec<PathBuf>, path: &Path) -> Vec<PathBuf> {
+    recent.retain(|p| p != path);
+    recent.insert(0, path.to_path_buf());
+    recent.truncate(RECENT_CAP);
+    recent
+}
+
 /// MIDI default-channel stepping: `* → 1 → … → 16 → *` (and back). Matches
 /// Qt's combo values ("*" first, then 1..16). Pure → unit-tested.
 fn next_midi_channel(ch: &str) -> String {
@@ -451,6 +470,25 @@ mod tests {
 
         // All off: the midi line always rides along (Qt does the same).
         assert_eq!(run_preamble(false, false, false, "*").lines().count(), 1);
+    }
+
+    #[test]
+    fn recent_files_dedupe_cap_and_round_trip() {
+        use super::{decode_recent, encode_recent, push_recent, RECENT_CAP};
+        use std::path::{Path, PathBuf};
+        let mut recent = Vec::new();
+        for i in 0..12 {
+            recent = push_recent(recent, Path::new(&format!("/tmp/file{i}.rb")));
+        }
+        assert_eq!(recent.len(), RECENT_CAP);
+        assert_eq!(recent[0], PathBuf::from("/tmp/file11.rb")); // newest first
+        // Re-opening an existing file moves it to the front without duping.
+        recent = push_recent(recent, Path::new("/tmp/file5.rb"));
+        assert_eq!(recent[0], PathBuf::from("/tmp/file5.rb"));
+        assert_eq!(recent.iter().filter(|p| **p == PathBuf::from("/tmp/file5.rb")).count(), 1);
+        // Prefs round-trip.
+        assert_eq!(decode_recent(&encode_recent(&recent)), recent);
+        assert!(decode_recent("").is_empty());
     }
 
     #[test]
@@ -1312,8 +1350,11 @@ impl ScopeMode {
 struct SonicSpike {
     buffers: Vec<Entity<InputState>>,
     /// Where each buffer was opened from / last saved to (Ctrl+S reuses it;
-    /// buffers never opened or saved prompt on save).
+    /// buffers never opened or saved prompt on save). Persisted per buffer,
+    /// so tabs keep their file names across restarts.
     file_paths: Vec<Option<PathBuf>>,
+    /// Recently opened/saved files, newest first (persisted, cap 8).
+    recent: Vec<PathBuf>,
     active: usize,
     cues: Entity<InputState>,
     scope: ScopeSource,
@@ -1606,9 +1647,15 @@ impl SonicSpike {
         );
         dock.update(cx, |d, cx| d.set_center(center, window, cx));
 
+        let file_paths: Vec<Option<PathBuf>> = (0..BUFFER_COUNT)
+            .map(|i| prefs.get(&format!("buffer_path_{i}")).map(PathBuf::from))
+            .collect();
+        let recent = prefs.get("recent_files").map(|v| decode_recent(v)).unwrap_or_default();
+
         Self {
             buffers,
-            file_paths: vec![None; BUFFER_COUNT],
+            file_paths,
+            recent,
             active: 0,
             cues,
             scope: ScopeSource::Detached,
@@ -1777,7 +1824,7 @@ impl SonicSpike {
                 match text {
                     Ok(text) => {
                         this.buffers[i].update(cx, |s, cx| s.set_value(text, window, cx));
-                        this.file_paths[i] = Some(path.clone());
+                        this.remember_file(i, &path);
                         this.log.push(LogLine::info(format!(
                             "→ Opened {} into buffer {}",
                             path.display(),
@@ -1815,7 +1862,7 @@ impl SonicSpike {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let _ = this.update_in(cx, |this, _, cx| {
-                this.file_paths[i] = Some(path.clone());
+                this.remember_file(i, &path);
                 this.write_buffer_to(i, &path, cx);
                 cx.notify();
             });
@@ -1851,6 +1898,17 @@ impl SonicSpike {
         let texts: Vec<String> =
             self.buffers.iter().map(|b| b.read(cx).value().to_string()).collect();
         store::save_buffers(&self.store_dir, &texts);
+    }
+
+    /// Associate `path` with buffer `i`: sticky save target, file-stem tab
+    /// name, and a spot at the head of the recent list — all persisted.
+    fn remember_file(&mut self, i: usize, path: &Path) {
+        self.file_paths[i] = Some(path.to_path_buf());
+        self.recent = push_recent(std::mem::take(&mut self.recent), path);
+        let mut prefs = store::load_prefs(&self.store_dir);
+        prefs.insert(format!("buffer_path_{i}"), path.to_string_lossy().into_owned());
+        prefs.insert("recent_files".into(), encode_recent(&self.recent));
+        store::save_prefs(&self.store_dir, &prefs);
     }
 
     /// Persist one settings pref (read-modify-write keeps the others).
@@ -2778,11 +2836,60 @@ impl SonicSpike {
 
     fn tab_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active;
-        h_flex().gap_1().p_1().children((0..self.buffers.len()).map(move |i| {
-            let btn = Button::new(("buffer-tab", i)).label(format!("{}", i + 1)).xsmall();
+        // Tabs carry their file name once a buffer is tied to one.
+        let labels: Vec<String> = (0..self.buffers.len())
+            .map(|i| match &self.file_paths[i] {
+                Some(p) => p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{}", i + 1)),
+                None => format!("{}", i + 1),
+            })
+            .collect();
+        let mut row = h_flex().gap_1().p_1().flex_wrap();
+        for (i, label) in labels.into_iter().enumerate() {
+            let btn = Button::new(("buffer-tab", i)).label(label).xsmall();
             let btn = if i == active { btn.primary() } else { btn };
-            btn.on_click(cx.listener(move |this, _, _, cx| this.select_buffer(i, cx)))
-        }))
+            row = row
+                .child(btn.on_click(cx.listener(move |this, _, _, cx| this.select_buffer(i, cx))));
+        }
+        // Recent files: one click re-opens into the ACTIVE buffer.
+        if !self.recent.is_empty() {
+            row = row.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                format!("{}:", self.i18n.tr("Recent")),
+            ));
+            for (i, path) in self.recent.clone().into_iter().enumerate() {
+                let stem = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                row = row.child(
+                    Button::new(("recent", i)).xsmall().ghost().label(stem).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            match std::fs::read_to_string(&path) {
+                                Ok(text) => {
+                                    let b = this.active;
+                                    this.buffers[b]
+                                        .update(cx, |s, cx| s.set_value(text, window, cx));
+                                    this.remember_file(b, &path);
+                                    this.log.push(LogLine::info(format!(
+                                        "→ Opened {} into buffer {}",
+                                        path.display(),
+                                        b + 1
+                                    )));
+                                }
+                                Err(e) => this.log.push(LogLine::error(format!(
+                                    "Open {} failed: {e}",
+                                    path.display()
+                                ))),
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+        }
+        row
     }
 
     /// Titled pane with accessibility wiring (id/role/label). `flash` drives
