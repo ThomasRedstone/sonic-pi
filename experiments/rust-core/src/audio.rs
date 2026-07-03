@@ -37,10 +37,13 @@ pub struct ProcessedAudio {
 
 /// Reads the engine's scope shared memory and (eventually) produces
 /// `ProcessedAudio`. The shm read half is real; the FFT/spectrum half is TODO.
+/// POSIX-shm-backed, so unix-only like the [`shm`] module.
+#[cfg(unix)]
 pub struct AudioProcessor {
     scope: Option<ScopeReader>,
 }
 
+#[cfg(unix)]
 impl AudioProcessor {
     pub fn new() -> Self {
         AudioProcessor { scope: None }
@@ -68,6 +71,7 @@ impl AudioProcessor {
     }
 }
 
+#[cfg(unix)]
 impl Default for AudioProcessor {
     fn default() -> Self {
         Self::new()

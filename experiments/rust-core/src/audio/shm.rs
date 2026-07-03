@@ -158,7 +158,10 @@ impl Mapping {
             let fd = libc::shm_open(
                 cname.as_ptr(),
                 libc::O_CREAT | libc::O_RDWR,
-                0o600 as libc::mode_t,
+                // c_uint, not mode_t: macOS declares shm_open variadic and
+                // its mode_t (u16) can't cross varargs; Linux's mode_t IS
+                // c_uint, so this cast is correct on both.
+                0o600 as libc::c_uint,
             );
             if fd < 0 {
                 return Err(io::Error::last_os_error());

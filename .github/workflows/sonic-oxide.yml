@@ -77,7 +77,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev \
-            libx11-xcb-dev libvulkan-dev libasound2-dev
+            libx11-xcb-dev libvulkan-dev libasound2-dev \
+            libfontconfig-dev pkg-config
       - name: Tests (headless — pure helpers, vocab, a11y geometry, store)
         working-directory: experiments/gpui-spike
         run: cargo test
