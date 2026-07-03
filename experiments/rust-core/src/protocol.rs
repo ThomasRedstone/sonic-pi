@@ -25,6 +25,14 @@ pub mod addr {
     pub const MIXER_STANDARD_STEREO: &str = "/mixer-standard-stereo";
     pub const MIXER_MONO_MODE: &str = "/mixer-mono-mode";
     pub const MIXER_STEREO_MODE: &str = "/mixer-stereo-mode";
+    pub const MIXER_HPF_ENABLE: &str = "/mixer-hpf-enable";
+    pub const MIXER_HPF_DISABLE: &str = "/mixer-hpf-disable";
+    pub const MIXER_LPF_ENABLE: &str = "/mixer-lpf-enable";
+    pub const MIXER_LPF_DISABLE: &str = "/mixer-lpf-disable";
+    pub const ENABLE_UPDATE_CHECKING: &str = "/enable-update-checking";
+    pub const DISABLE_UPDATE_CHECKING: &str = "/disable-update-checking";
+    pub const GAMEPAD_START: &str = "/gamepad-start";
+    pub const GAMEPAD_STOP: &str = "/gamepad-stop";
     pub const MIDI_START: &str = "/midi-start";
     pub const MIDI_STOP: &str = "/midi-stop";
     pub const CUE_PORT_START: &str = "/cue-port-start";
@@ -198,6 +206,44 @@ pub mod out {
     pub fn mixer_force_mono(token: i32, mono: bool) -> OscMessage {
         let a = if mono { addr::MIXER_MONO_MODE } else { addr::MIXER_STEREO_MODE };
         msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/mixer-hpf-enable [token] [freq]` / `/mixer-hpf-disable [token]` —
+    /// master high-pass filter; `freq` is a MIDI-note cutoff (mirrors
+    /// `MainWindow::mixerHpfEnable/Disable`).
+    pub fn mixer_hpf(token: i32, freq: Option<f32>) -> OscMessage {
+        match freq {
+            Some(f) => msg(
+                addr::MIXER_HPF_ENABLE,
+                vec![OscType::Int(token), OscType::Float(f)],
+            ),
+            None => msg(addr::MIXER_HPF_DISABLE, vec![OscType::Int(token)]),
+        }
+    }
+
+    /// `/mixer-lpf-enable [token] [freq]` / `/mixer-lpf-disable [token]` —
+    /// master low-pass filter (MIDI-note cutoff).
+    pub fn mixer_lpf(token: i32, freq: Option<f32>) -> OscMessage {
+        match freq {
+            Some(f) => msg(
+                addr::MIXER_LPF_ENABLE,
+                vec![OscType::Int(token), OscType::Float(f)],
+            ),
+            None => msg(addr::MIXER_LPF_DISABLE, vec![OscType::Int(token)]),
+        }
+    }
+
+    /// `/enable-update-checking` / `/disable-update-checking [token]`.
+    pub fn update_checking(token: i32, enabled: bool) -> OscMessage {
+        let a = if enabled { addr::ENABLE_UPDATE_CHECKING } else { addr::DISABLE_UPDATE_CHECKING };
+        msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/gamepad-start` / `/gamepad-stop [token] [silent]` — Spider's gamepad
+    /// subsystem (mirrors the MIDI toggle's shape).
+    pub fn gamepad_enabled(token: i32, enabled: bool, silent: bool) -> OscMessage {
+        let a = if enabled { addr::GAMEPAD_START } else { addr::GAMEPAD_STOP };
+        msg(a, vec![OscType::Int(token), OscType::Int(silent as i32)])
     }
 
     /// `/midi-start` / `/midi-stop [token] [silent]` — Spider's MIDI system
@@ -472,6 +518,22 @@ mod tests {
         assert_eq!(out::mixer_invert_stereo(7, false).addr, addr::MIXER_STANDARD_STEREO);
         assert_eq!(out::mixer_force_mono(7, true).addr, addr::MIXER_MONO_MODE);
         assert_eq!(out::mixer_force_mono(7, false).addr, addr::MIXER_STEREO_MODE);
+
+        let h = out::mixer_hpf(7, Some(80.0));
+        assert_eq!(h.addr, addr::MIXER_HPF_ENABLE);
+        assert_eq!(h.args, vec![OscType::Int(7), OscType::Float(80.0)]);
+        assert_eq!(out::mixer_hpf(7, None).addr, addr::MIXER_HPF_DISABLE);
+        assert_eq!(out::mixer_hpf(7, None).args, vec![OscType::Int(7)]);
+        assert_eq!(out::mixer_lpf(7, Some(100.0)).addr, addr::MIXER_LPF_ENABLE);
+        assert_eq!(out::mixer_lpf(7, None).addr, addr::MIXER_LPF_DISABLE);
+
+        assert_eq!(out::update_checking(7, true).addr, addr::ENABLE_UPDATE_CHECKING);
+        assert_eq!(out::update_checking(7, false).addr, addr::DISABLE_UPDATE_CHECKING);
+        assert_eq!(out::gamepad_enabled(7, true, true).addr, addr::GAMEPAD_START);
+        assert_eq!(
+            out::gamepad_enabled(7, false, false).args,
+            vec![OscType::Int(7), OscType::Int(0)]
+        );
 
         let d = out::audio_switch_driver(9, "ALSA");
         assert_eq!(d.addr, addr::DAEMON_AUDIO_SWITCH_DRIVER);

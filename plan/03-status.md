@@ -360,6 +360,24 @@ hasn't started.**
   defaults; `Theme::apply_config` + `Theme::change(cfg.mode, …)` applies.
   The catalogue only lists after watch_dir's async load lands.
 
+## Done 2026-07-03 (small parity gaps; supersonic bump committed)
+
+- SuperSonic submodule pointer committed (c4304ce2a, MAGIC verified).
+- Mixer **HPF/LPF** (toggle + MIDI-note cutoff steppers 0..135,
+  `/mixer-hpf|lpf-enable [token, freq]` / `-disable [token]`), **log cues**
+  (preamble `use_cue_logging false`, Qt order: nearest user code),
+  **gamepad** + **update checking** toggles (update checks default OFF —
+  deliberate divergence from Qt; network opt-in), all persisted +
+  re-applied on SpiderReady.
+- **Recording stop now prompts where to save** (Qt parity); cancel keeps
+  the take in the recordings store. rename with copy+remove fallback.
+- **View toggles** in settings show/hide the scope/cues/log dock panes via
+  `Panel::visible` — no dock surgery, panels keep state while hidden.
+- NOTE: parity gaps NOT ported, deliberately: per-port MIDI enable,
+  per-device gamepad enable (both niche; wire formats are in the research
+  table), Qt's log-cues auto-scroll semantics.
+- Runtime smoke deferred (app was in use); next boot exercises it.
+
 ### The gate
 
 **Qt retirement** (roadmap exit criteria): sustained side-by-side daily use

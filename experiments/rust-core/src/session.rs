@@ -199,6 +199,27 @@ impl Session {
         self.spider.send(&protocol::out::mixer_force_mono(self.token, mono))
     }
 
+    /// Master high-pass filter: `Some(freq)` enables (MIDI-note cutoff),
+    /// `None` disables (`/mixer-hpf-enable|disable`).
+    pub fn set_mixer_hpf(&self, freq: Option<f32>) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::mixer_hpf(self.token, freq))
+    }
+
+    /// Master low-pass filter (`/mixer-lpf-enable|disable`).
+    pub fn set_mixer_lpf(&self, freq: Option<f32>) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::mixer_lpf(self.token, freq))
+    }
+
+    /// Version-check opt-in (`/enable-update-checking|disable-…`).
+    pub fn set_update_checking(&self, enabled: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::update_checking(self.token, enabled))
+    }
+
+    /// Enable/disable Spider's gamepad subsystem (`/gamepad-start|stop`).
+    pub fn set_gamepad_enabled(&self, enabled: bool, silent: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::gamepad_enabled(self.token, enabled, silent))
+    }
+
     /// Daemon-brokered audio driver switch (`/daemon/audio/switch-driver`).
     pub fn switch_audio_driver(&self, driver: &str) -> Result<(), CoreError> {
         self.daemon.send(&protocol::out::audio_switch_driver(self.token, driver))

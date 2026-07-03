@@ -239,7 +239,13 @@ fn app_root() -> PathBuf {
 /// line numbers (runtime.rb) and strips them on buffer save, so this is
 /// invisible to the user. `midi_channel` is `"*"` (all) or `"1"`..`"16"`.
 /// Pure → unit-tested.
-fn run_preamble(safe: bool, external_synths: bool, timing: bool, midi_channel: &str) -> String {
+fn run_preamble(
+    safe: bool,
+    external_synths: bool,
+    timing: bool,
+    log_cues: bool,
+    midi_channel: &str,
+) -> String {
     const SUFFIX: &str = " #__nosave__ set by Sonic Oxide user preferences.\n";
     let mut p = format!("use_midi_defaults channel: \"{midi_channel}\"{SUFFIX}");
     if timing {
@@ -250,6 +256,10 @@ fn run_preamble(safe: bool, external_synths: bool, timing: bool, midi_channel: &
     }
     if safe {
         p.push_str(&format!("use_arg_checks true{SUFFIX}"));
+    }
+    // Qt prepends this one first → it sits nearest the user code.
+    if !log_cues {
+        p.push_str(&format!("use_cue_logging false{SUFFIX}"));
     }
     p
 }
@@ -452,24 +462,26 @@ mod tests {
     #[test]
     fn preamble_mirrors_qt_run_code() {
         use super::run_preamble;
-        // Defaults: safe mode on, channel "*" — two lines, midi first.
-        let p = run_preamble(true, false, false, "*");
+        // Defaults: safe mode on, cue logging on, channel "*" — two lines.
+        let p = run_preamble(true, false, false, true, "*");
         let lines: Vec<&str> = p.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("use_midi_defaults channel: \"*\""));
         assert!(lines[1].starts_with("use_arg_checks true"));
         assert!(lines.iter().all(|l| l.contains("#__nosave__")));
 
-        // Everything on: 4 lines, Qt's prepend order.
-        let p = run_preamble(true, true, true, "10");
+        // Everything on + cue logging off: 5 lines, Qt's prepend order
+        // (cue_logging is prepended first in Qt → nearest the user code).
+        let p = run_preamble(true, true, true, false, "10");
         let lines: Vec<&str> = p.lines().collect();
         assert!(lines[0].contains("channel: \"10\""));
         assert!(lines[1].starts_with("use_timing_guarantees true"));
         assert!(lines[2].starts_with("use_external_synths true"));
         assert!(lines[3].starts_with("use_arg_checks true"));
+        assert!(lines[4].starts_with("use_cue_logging false"));
 
         // All off: the midi line always rides along (Qt does the same).
-        assert_eq!(run_preamble(false, false, false, "*").lines().count(), 1);
+        assert_eq!(run_preamble(false, false, false, true, "*").lines().count(), 1);
     }
 
     #[test]
@@ -874,6 +886,30 @@ impl Backend {
     fn set_force_mono(&self, on: bool) {
         if let Backend::Real { session, .. } = self {
             let _ = session.set_mixer_force_mono(on);
+        }
+    }
+
+    fn set_hpf(&self, freq: Option<f32>) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_mixer_hpf(freq);
+        }
+    }
+
+    fn set_lpf(&self, freq: Option<f32>) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_mixer_lpf(freq);
+        }
+    }
+
+    fn set_gamepad(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_gamepad_enabled(on, true);
+        }
+    }
+
+    fn set_update_checking(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_update_checking(on);
         }
     }
 
@@ -1419,6 +1455,18 @@ struct SonicSpike {
     cue_external: bool,
     invert_stereo: bool,
     force_mono: bool,
+    /// Master HPF/LPF: enabled + MIDI-note cutoff (0..135).
+    hpf_enabled: bool,
+    hpf_freq: f32,
+    lpf_enabled: bool,
+    lpf_freq: f32,
+    /// `use_cue_logging false` rides the preamble when off (Qt parity).
+    log_cues: bool,
+    gamepad_enabled: bool,
+    update_checking: bool,
+    /// Dock panels hidden via the settings View toggles
+    /// (`Panel::visible` reads this).
+    hidden_panels: std::collections::HashSet<&'static str>,
     /// Current UI language + the discovered choices.
     lang: String,
     langs: Vec<String>,
@@ -1701,6 +1749,15 @@ impl SonicSpike {
             cue_external: pref_bool("cue_external", false),
             invert_stereo: pref_bool("invert_stereo", false),
             force_mono: pref_bool("force_mono", false),
+            hpf_enabled: pref_bool("hpf_enabled", false),
+            hpf_freq: prefs.get("hpf_freq").and_then(|v| v.parse().ok()).unwrap_or(80.0),
+            lpf_enabled: pref_bool("lpf_enabled", false),
+            lpf_freq: prefs.get("lpf_freq").and_then(|v| v.parse().ok()).unwrap_or(100.0),
+            log_cues: pref_bool("log_cues", true),
+            gamepad_enabled: pref_bool("gamepad_enabled", true),
+            // Network calls stay opt-in (Qt defaults on; we don't).
+            update_checking: pref_bool("update_checking", false),
+            hidden_panels: std::collections::HashSet::new(),
             lang,
             langs,
             last_tap: None,
@@ -1929,6 +1986,10 @@ impl SonicSpike {
         self.backend.set_cue_external(self.cue_external);
         self.backend.set_invert_stereo(self.invert_stereo);
         self.backend.set_force_mono(self.force_mono);
+        self.backend.set_hpf(self.hpf_enabled.then_some(self.hpf_freq));
+        self.backend.set_lpf(self.lpf_enabled.then_some(self.lpf_freq));
+        self.backend.set_gamepad(self.gamepad_enabled);
+        self.backend.set_update_checking(self.update_checking);
     }
 
     /// Run the active buffer (button and Alt+R share this).
@@ -1942,6 +2003,7 @@ impl SonicSpike {
                 self.safe_mode,
                 self.external_synths,
                 self.timing_guarantees,
+                self.log_cues,
                 &self.midi_channel
             ),
             user_code
@@ -2572,6 +2634,69 @@ impl SonicSpike {
                 })),
         );
 
+        // Master filters: toggle + MIDI-note cutoff steppers (0..135, ±5).
+        let filter_row = |this: &Self,
+                          cx: &mut Context<Self>,
+                          id: &'static str,
+                          label: &'static str,
+                          enabled: bool,
+                          freq: f32,
+                          toggle: fn(&mut Self, bool),
+                          nudge: fn(&mut Self, f32)| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(this.setting_toggle(id, label, enabled, cx, move |t, v| toggle(t, v)))
+                .child(div().text_xs().child(format!("{freq:.0}")))
+                .child(
+                    Button::new((id, 0usize)).xsmall().outline().label("−").on_click(
+                        cx.listener(move |t, _, _, cx| {
+                            nudge(t, -5.0);
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .child(
+                    Button::new((id, 1usize)).xsmall().outline().label("+").on_click(
+                        cx.listener(move |t, _, _, cx| {
+                            nudge(t, 5.0);
+                            cx.notify();
+                        }),
+                    ),
+                )
+        };
+        fn hpf_toggle(t: &mut SonicSpike, v: bool) {
+            t.hpf_enabled = v;
+            t.set_pref("hpf_enabled", v);
+            t.backend.set_hpf(v.then_some(t.hpf_freq));
+        }
+        fn hpf_nudge(t: &mut SonicSpike, d: f32) {
+            t.hpf_freq = (t.hpf_freq + d).clamp(0.0, 135.0);
+            t.set_pref("hpf_freq", t.hpf_freq);
+            if t.hpf_enabled {
+                t.backend.set_hpf(Some(t.hpf_freq));
+            }
+        }
+        fn lpf_toggle(t: &mut SonicSpike, v: bool) {
+            t.lpf_enabled = v;
+            t.set_pref("lpf_enabled", v);
+            t.backend.set_lpf(v.then_some(t.lpf_freq));
+        }
+        fn lpf_nudge(t: &mut SonicSpike, d: f32) {
+            t.lpf_freq = (t.lpf_freq + d).clamp(0.0, 135.0);
+            t.set_pref("lpf_freq", t.lpf_freq);
+            if t.lpf_enabled {
+                t.backend.set_lpf(Some(t.lpf_freq));
+            }
+        }
+        pane = pane.child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(filter_row(self, cx, "hpf", "HPF", self.hpf_enabled, self.hpf_freq, hpf_toggle, hpf_nudge))
+                .child(filter_row(self, cx, "lpf", "LPF", self.lpf_enabled, self.lpf_freq, lpf_toggle, lpf_nudge)),
+        );
+
         // MIDI: enable + default channel ("*" = all, 1..16 — rides the run
         // preamble as use_midi_defaults, exactly like Qt).
         let midi_ch = self.midi_channel.clone();
@@ -2634,8 +2759,48 @@ impl SonicSpike {
                 .child(self.setting_toggle("external-synths", "External synths", self.external_synths, cx, |this, v| {
                     this.external_synths = v;
                     this.set_pref("external_synths", v);
+                }))
+                .child(self.setting_toggle("log-cues", "Log cues", self.log_cues, cx, |this, v| {
+                    this.log_cues = v;
+                    this.set_pref("log_cues", v);
                 })),
         );
+
+        // Peripherals + update checking (live spider toggles).
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .flex_wrap()
+                .child(self.setting_toggle("gamepad", "Gamepad", self.gamepad_enabled, cx, |this, v| {
+                    this.gamepad_enabled = v;
+                    this.set_pref("gamepad_enabled", v);
+                    this.backend.set_gamepad(v);
+                }))
+                .child(self.setting_toggle("update-check", "Check for updates", self.update_checking, cx, |this, v| {
+                    this.update_checking = v;
+                    this.set_pref("update_checking", v);
+                    this.backend.set_update_checking(v);
+                })),
+        );
+
+        // View: show/hide the dock panes (state is kept while hidden).
+        pane = pane.child(div().text_xs().child(self.i18n.tr("View").to_string()));
+        let mut row = h_flex().gap_1().flex_wrap();
+        for (i, (id, title)) in
+            [("scope", "Scope"), ("cues", "Cues"), ("log", "Log")].into_iter().enumerate()
+        {
+            let shown = !self.hidden_panels.contains(id);
+            let text = format!("{} {}", if shown { "☑" } else { "☐" }, self.i18n.tr(title));
+            let btn = Button::new(("view", i)).xsmall().label(text);
+            let btn = if shown { btn.primary() } else { btn.outline() };
+            row = row.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                if !this.hidden_panels.remove(id) {
+                    this.hidden_panels.insert(id);
+                }
+                cx.notify();
+            })));
+        }
+        pane = pane.child(row);
 
         // Theme catalogue (built-ins + anything in etc/themes).
         let themes: Vec<(SharedString, bool)> = {
@@ -2706,11 +2871,55 @@ impl SonicSpike {
     }
 
     /// Start/stop recording (Rec button + its a11y action share this).
-    fn toggle_record(&mut self, cx: &mut Context<Self>) {
+    /// Stop asks where to save (Qt parity); cancel keeps the take in the
+    /// recordings store. The dialog time also lets JUCE finalise the WAV.
+    fn toggle_record(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.recording.take() {
             Some(path) => {
                 self.backend.record_stop();
-                self.log.push(LogLine::info(format!("→ Recording saved: {}", path.display())));
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let suggested = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "recording.wav".into());
+                let rx = cx.prompt_for_new_path(&home, Some(&suggested));
+                cx.spawn_in(window, async move |this, cx| {
+                    let target = match rx.await {
+                        Ok(Ok(Some(t))) => t,
+                        _ => {
+                            let _ = this.update_in(cx, |this, _, cx| {
+                                this.log.push(LogLine::info(format!(
+                                    "→ Recording kept: {}",
+                                    path.display()
+                                )));
+                                cx.notify();
+                            });
+                            return;
+                        }
+                    };
+                    // Same filesystem in the common case; fall back to
+                    // copy+remove across mounts.
+                    let moved = std::fs::rename(&path, &target).or_else(|_| {
+                        std::fs::copy(&path, &target)
+                            .and_then(|_| std::fs::remove_file(&path))
+                    });
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        match moved {
+                            Ok(()) => this.log.push(LogLine::info(format!(
+                                "→ Recording saved: {}",
+                                target.display()
+                            ))),
+                            Err(e) => this.log.push(LogLine::error(format!(
+                                "Recording save failed ({e}); kept at {}",
+                                path.display()
+                            ))),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
             }
             None => {
                 let dir = self.store_dir.join("recordings");
@@ -2734,7 +2943,7 @@ impl SonicSpike {
         match cmd {
             Cmd::Run => self.run_active(cx),
             Cmd::Stop => self.stop_all(cx),
-            Cmd::Rec => self.toggle_record(cx),
+            Cmd::Rec => self.toggle_record(window, cx),
             Cmd::Open => self.open_file(window, cx),
             Cmd::Save => self.save_file(false, window, cx),
             Cmd::Comment => self.comment_active(window, cx),
@@ -3188,10 +3397,15 @@ macro_rules! oxide_panel {
                 SharedString::from(self.app.read(cx).i18n.tr($title).to_string())
             }
 
-            // The three core panes have no re-open affordance yet — keep the
-            // tab's ✕ away until a "View" menu exists.
+            // Hide/show via the settings View toggles instead of the tab's ✕
+            // (a closed panel would need dock surgery to re-add; a hidden one
+            // keeps its state).
             fn closable(&self, _cx: &App) -> bool {
                 false
+            }
+
+            fn visible(&self, cx: &App) -> bool {
+                !self.app.read(cx).hidden_panels.contains($panel_id)
             }
         }
     };
