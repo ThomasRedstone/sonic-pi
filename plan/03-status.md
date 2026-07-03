@@ -387,13 +387,18 @@ after Tier 1 lands. Tier 1's exit test starts that clock.
 
 Agreed order (Tom): harness → cross-platform → editor.
 
-1. **Conformance + latency harness** — the foundation for foundations.
-   a) `latency_probe` example: boot the real runtime, measure the numbers
-      that define "live" feel — run→first-reply, run→scope-activity,
-      external-cue→/incoming/osc. Thresholds generous at first; ratchet.
-   b) Scripted-session conformance: drive run/stop/volume/devices/record
-      against the real runtime, assert the expected reply families arrive
-      (extends supervisor_check into an action-oriented suite).
+1. ✅ **Conformance + latency harness** (2026-07-03) —
+   a) `latency_probe` (`make latency`) BASELINE (debug build, this machine):
+      boot→spider-ready **~1.8s** (the "slow Ruby boot" assumption was
+      wrong — YJIT/bytecode side-quest deprioritised; system ruby lacks
+      YJIT anyway), run→first-reply **<5ms** (probe resolution),
+      run→scope-active **~425ms**, cue→event **<5ms**. Ceilings stay
+      generous for CI variance; ratchet after more samples.
+   b) `conformance_check` (in `make e2e`): full settings-sweep vs the real
+      runtime — PASS, zero token rejections; drivers list + switch round-
+      trip live. Found+fixed pre-run: switch replies route to the request's
+      source socket → must send via `OscServer::send_from` (fire-and-forget
+      sender loses the reply).
    c) Optional later: automated Qt A/B replay — do it while Qt is still
       installed and trusted; that window closes at retirement.
 2. **Cross-platform core** (prep for mac/win WITHOUT the machines):
