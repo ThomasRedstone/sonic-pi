@@ -319,14 +319,45 @@ hasn't started.**
    `text::markdown` view; 34 examples by category, click loads into the
    active buffer. Loaders in `tutorial.rs`, real-repo tested.
    package-linux.sh now ships etc/doc/tutorial + etc/examples.
-2. **Settings breadth** — audio driver picker, safe mode, MIDI enable +
-   default channel, OSC network opts (external IPs), theme catalogue,
-   language picker (i18n mechanism is live).
-3. **Session/file management** — recent files, buffer naming.
-4. **i18n**: extract remaining strings → .po tooling → locales beyond de.
+2. ✅ **Settings breadth** (2026-07-03) — driver picker (live
+   `/supersonic/drivers/*`, daemon-brokered in daemon.rb mode), MIDI
+   enable + default channel, network OSC (cue server on/off + remote),
+   invert stereo / force mono, safe mode + timing guarantees + external
+   synths (via the Qt `#__nosave__` run preamble — spider subtracts those
+   lines from error line numbers), theme catalogue
+   (`ThemeRegistry::watch_dir` on etc/themes; Sonic Pi Dark/Light shipped),
+   language picker (live reload). All prefs persist in prefs.conf;
+   spider-side ones re-apply on SpiderReady. Wire formats mirrored from
+   mainwindow.cpp/spider-server.rb (see the wire-format table in that
+   research if needed: MIDI + cue toggles are token-prefixed spider OSC;
+   safe mode/MIDI channel are preamble-only).
+   KEY MECHANISM: `/supersonic/drivers/list` replies to the request's
+   SOURCE socket — `OscServer::send_from` sends from the listening socket
+   (a fire-and-forget sender would lose the reply).
+3. ✅ **Session/file management** (2026-07-03) — recent-files strip (cap 8,
+   deduped, persisted), buffer tabs show their file names, per-buffer
+   paths persist so Ctrl+S works across restarts.
+4. ✅ **i18n** (2026-07-03) — full string sweep (everything user-visible
+   with i18n access goes through tr; EditorA11y's static label is the one
+   holdout), `experiments/i18n-tools.py` (extract / missing / to-po /
+   from-po, CI-friendly), French locale shipped, unit test enforces de/fr
+   key parity. BUILD.md documents the workflow.
 5. **mac/windows** — build scripts + runtime paths per OS (needs machines).
 6. **Upstream gpui-component** — completion-menu custom widgets
    (piano/slider), editor glyph metrics for magnifier a11y.
+
+## Done 2026-07-03 (Tier 2.2–2.4; 33 spike + 37 core tests)
+
+- rust-core grew: settings-toggle protocol builders (wire-format tested),
+  `AudioDrivers`/`DriverSwitched` events, `Session` setting methods,
+  `OscServer::send_from` (source-routed request/reply).
+- NOT YET runtime-verified: the whole settings batch landed while Tom's
+  rehearsal used the audio device (a second engine would contend for it) —
+  run `make -C experiments e2e` + a SONIC_SPIKE_AUTOQUIT run when free.
+  Driver switching + MIDI/cue toggles also want a hands-on check.
+- Themes: sparse ThemeConfig JSONs inherit unset colors from the mode's
+  defaults; `Theme::apply_config` + `Theme::change(cfg.mode, …)` applies.
+  The catalogue only lists after watch_dir's async load lands.
 
 ### The gate
 
