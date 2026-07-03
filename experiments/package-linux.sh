@@ -36,6 +36,7 @@ rsync -a "${REPO}/etc/synthdefs" "${DIST}/etc/"
 mkdir -p "${DIST}/etc/doc"
 rsync -a "${REPO}/etc/doc/cheatsheets" "${DIST}/etc/doc/"
 rsync -a "${REPO}/etc/doc/tutorial" "${DIST}/etc/doc/"   # tutorial browser
+rsync -a "${REPO}/etc/doc/images" "${DIST}/etc/doc/"     # tutorial diagrams
 rsync -a "${REPO}/etc/examples" "${DIST}/etc/"           # examples loader
 rsync -a "${REPO}/etc/themes" "${DIST}/etc/"             # theme catalogue
 rsync -a "${REPO}/etc/i18n" "${DIST}/etc/" 2>/dev/null || true

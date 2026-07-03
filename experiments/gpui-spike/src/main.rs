@@ -2534,8 +2534,11 @@ impl SonicSpike {
             let btn = if self.chapter_ix == Some(i) { btn.primary() } else { btn.ghost() };
             nav = nav.child(btn.on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(ch) = this.chapters.as_ref().and_then(|c| c.get(i)) {
-                    this.chapter_body =
-                        std::fs::read_to_string(&ch.path).unwrap_or_default().into();
+                    let raw = std::fs::read_to_string(&ch.path).unwrap_or_default();
+                    // Diagrams reference images relative to the chapter file;
+                    // absolutise so the markdown view's disk loader finds them.
+                    let dir = ch.path.parent().unwrap_or(Path::new("."));
+                    this.chapter_body = tutorial::absolutize_image_paths(&raw, dir).into();
                     this.chapter_ix = Some(i);
                 }
                 cx.notify();

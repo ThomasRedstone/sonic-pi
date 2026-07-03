@@ -14,8 +14,11 @@ default-run = "sonic-gpui-spike"
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+# Tom's fork = upstream 1505b14 + the local-image-paths patch (markdown
+# images with scheme-less URLs load from disk — the tutorial's diagrams).
+# PR-able upstream; drop back to longbridge/gpui-component once merged.
+gpui-component = { git = "https://github.com/ThomasRedstone/gpui-component", rev = "45fdffb202cf3e1d90298490f0545844484a6e46" }
+gpui-component-assets = { git = "https://github.com/ThomasRedstone/gpui-component", rev = "45fdffb202cf3e1d90298490f0545844484a6e46" }
 libc = "0.2"
 # Must match gpui-component's pin — the CompletionProvider trait speaks these types.
 lsp-types = { version = "0.97.0", features = ["proposed"] }

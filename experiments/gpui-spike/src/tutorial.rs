@@ -37,6 +37,52 @@ pub fn load_chapters(tutorial_dir: &Path) -> Vec<Chapter> {
         .collect()
 }
 
+/// Rewrite a chapter's relative image URLs to absolute paths (resolved
+/// against the chapter file's directory) so the markdown view's disk loader
+/// finds them regardless of the process CWD. http(s) URLs pass through.
+/// Pure → unit-tested.
+pub fn absolutize_image_paths(md: &str, md_dir: &Path) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    while let Some(start) = rest.find("![") {
+        // Copy up to the image, then try to parse `![alt](url)`.
+        let (before, at_image) = rest.split_at(start);
+        out.push_str(before);
+        let Some(close_alt) = at_image.find("](") else {
+            out.push_str(at_image);
+            return out;
+        };
+        let Some(end) = at_image[close_alt..].find(')') else {
+            out.push_str(at_image);
+            return out;
+        };
+        let url_start = close_alt + 2;
+        let url_end = close_alt + end;
+        let url = &at_image[url_start..url_end];
+        out.push_str(&at_image[..url_start]);
+        if url.contains("://") || Path::new(url).is_absolute() {
+            out.push_str(url);
+        } else {
+            // Normalise the ../-heavy relative references without requiring
+            // the file to exist (canonicalize would).
+            let mut abs = md_dir.to_path_buf();
+            for part in Path::new(url).components() {
+                match part {
+                    std::path::Component::ParentDir => {
+                        abs.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => abs.push(other),
+                }
+            }
+            out.push_str(&abs.to_string_lossy());
+        }
+        rest = &at_image[url_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub struct Example {
     pub category: String,
     pub name: String,
@@ -109,6 +155,44 @@ mod tests {
         let mut sorted = deduped.clone();
         sorted.sort();
         assert_eq!(deduped, sorted, "categories should be contiguous + sorted");
+    }
+
+    #[test]
+    fn absolutizes_relative_image_urls() {
+        let dir = Path::new("/repo/etc/doc/tutorial");
+        // The real chapters use ../-heavy relative references.
+        let md = "intro\n![sample graph](../../../etc/doc/images/tutorial/sample.png)\nafter";
+        let out = absolutize_image_paths(md, dir);
+        assert!(
+            out.contains("![sample graph](/repo/etc/doc/images/tutorial/sample.png)"),
+            "got: {out}"
+        );
+        assert!(out.starts_with("intro\n") && out.ends_with("\nafter"));
+
+        // http URLs and absolute paths pass through; broken syntax is left alone.
+        let md = "![a](https://x/y.png) ![b](/abs/p.png) ![c](broken";
+        let out = absolutize_image_paths(md, dir);
+        assert!(out.contains("(https://x/y.png)"));
+        assert!(out.contains("(/abs/p.png)"));
+        assert!(out.ends_with("![c](broken"));
+
+        // Every real chapter's images resolve to files that exist.
+        let tutorial_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../etc/doc/tutorial");
+        let mut checked = 0;
+        for ch in load_chapters(&tutorial_dir) {
+            let raw = std::fs::read_to_string(&ch.path).unwrap();
+            let abs = absolutize_image_paths(&raw, ch.path.parent().unwrap());
+            for line in abs.lines().filter(|l| l.trim_start().starts_with("![")) {
+                if let Some(url) = line.split("](").nth(1).and_then(|s| s.split(')').next()) {
+                    if !url.contains("://") {
+                        assert!(Path::new(url).exists(), "missing image: {url}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked >= 20, "expected the tutorial's images, checked {checked}");
     }
 
     #[test]
