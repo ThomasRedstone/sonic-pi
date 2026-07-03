@@ -75,7 +75,8 @@ use sonicpi_core::process::Daemon;
 use sonicpi_core::rosc::{OscMessage, OscType};
 use sonicpi_core::supervisor::Supervisor;
 use sonicpi_core::{
-    protocol, ApiClient, AudioDevicesInfo, AudioInputDevicesInfo, ClientEvent, Session, StatusType,
+    protocol, ApiClient, AudioDevicesInfo, AudioDriversInfo, AudioInputDevicesInfo, ClientEvent,
+    Session, StatusType,
 };
 
 const BUFFER_SEEDS: [&str; 3] = [
@@ -186,6 +187,17 @@ fn log_lines_for(ev: &ClientEvent) -> Vec<LogLine> {
             d.current_device
         ))],
         ClientEvent::Scsynth(i) => vec![LogLine::info(format!("[scsynth] {}", i.text))],
+        ClientEvent::AudioDrivers(d) => vec![LogLine::info(format!(
+            "[audio] {} driver(s), current: {}",
+            d.drivers.len(),
+            d.current
+        ))],
+        ClientEvent::DriverSwitched { ok: true, detail } => {
+            vec![LogLine::info(format!("[audio] driver switched: {detail}"))]
+        }
+        ClientEvent::DriverSwitched { ok: false, detail } => {
+            vec![LogLine::error(format!("driver switch failed: {detail}"))]
+        }
         ClientEvent::Cue(_) => vec![], // rendered in the Cues pane
         ClientEvent::Unhandled { addr } => vec![LogLine::debug(format!("[osc] {addr}"))],
         other => vec![LogLine::debug(format!("{other:?}"))],
@@ -220,6 +232,44 @@ fn app_root() -> PathBuf {
         }
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app")
+}
+
+/// The `#__nosave__` preamble Qt's `runCode` prepends to every run — same
+/// lines, same order. Spider subtracts leading `#__nosave__` lines from error
+/// line numbers (runtime.rb) and strips them on buffer save, so this is
+/// invisible to the user. `midi_channel` is `"*"` (all) or `"1"`..`"16"`.
+/// Pure → unit-tested.
+fn run_preamble(safe: bool, external_synths: bool, timing: bool, midi_channel: &str) -> String {
+    const SUFFIX: &str = " #__nosave__ set by Sonic Oxide user preferences.\n";
+    let mut p = format!("use_midi_defaults channel: \"{midi_channel}\"{SUFFIX}");
+    if timing {
+        p.push_str(&format!("use_timing_guarantees true{SUFFIX}"));
+    }
+    if external_synths {
+        p.push_str(&format!("use_external_synths true{SUFFIX}"));
+    }
+    if safe {
+        p.push_str(&format!("use_arg_checks true{SUFFIX}"));
+    }
+    p
+}
+
+/// MIDI default-channel stepping: `* → 1 → … → 16 → *` (and back). Matches
+/// Qt's combo values ("*" first, then 1..16). Pure → unit-tested.
+fn next_midi_channel(ch: &str) -> String {
+    match ch.parse::<u8>() {
+        Ok(n) if n >= 16 => "*".into(),
+        Ok(n) => (n + 1).to_string(),
+        Err(_) => "1".into(),
+    }
+}
+
+fn prev_midi_channel(ch: &str) -> String {
+    match ch.parse::<u8>() {
+        Ok(n) if n <= 1 => "*".into(),
+        Ok(n) => (n - 1).to_string(),
+        Err(_) => "16".into(),
+    }
 }
 
 /// Save-dialog filename suggestion: keep the buffer's known name, else
@@ -379,6 +429,40 @@ mod tests {
     }
 
     use super::{byte_to_text_position, line_runs, parse_cue_time, word_starts};
+
+    #[test]
+    fn preamble_mirrors_qt_run_code() {
+        use super::run_preamble;
+        // Defaults: safe mode on, channel "*" — two lines, midi first.
+        let p = run_preamble(true, false, false, "*");
+        let lines: Vec<&str> = p.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("use_midi_defaults channel: \"*\""));
+        assert!(lines[1].starts_with("use_arg_checks true"));
+        assert!(lines.iter().all(|l| l.contains("#__nosave__")));
+
+        // Everything on: 4 lines, Qt's prepend order.
+        let p = run_preamble(true, true, true, "10");
+        let lines: Vec<&str> = p.lines().collect();
+        assert!(lines[0].contains("channel: \"10\""));
+        assert!(lines[1].starts_with("use_timing_guarantees true"));
+        assert!(lines[2].starts_with("use_external_synths true"));
+        assert!(lines[3].starts_with("use_arg_checks true"));
+
+        // All off: the midi line always rides along (Qt does the same).
+        assert_eq!(run_preamble(false, false, false, "*").lines().count(), 1);
+    }
+
+    #[test]
+    fn midi_channel_steps_cycle_star_and_1_to_16() {
+        use super::{next_midi_channel, prev_midi_channel};
+        assert_eq!(next_midi_channel("*"), "1");
+        assert_eq!(next_midi_channel("1"), "2");
+        assert_eq!(next_midi_channel("16"), "*");
+        assert_eq!(prev_midi_channel("*"), "16");
+        assert_eq!(prev_midi_channel("1"), "*");
+        assert_eq!(prev_midi_channel("16"), "15");
+    }
 
     #[test]
     fn save_name_prefers_the_known_filename() {
@@ -720,6 +804,55 @@ impl Backend {
     fn set_volume(&self, amp: f32) {
         if let Backend::Real { session, .. } = self {
             let _ = session.set_mixer_amp(amp, false);
+        }
+    }
+
+    /// Spider-side settings toggles (real backend only; silent no-ops on
+    /// loopback, like the other setters).
+    fn set_midi(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_midi_enabled(on, true);
+        }
+    }
+
+    fn set_cue_server(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_cue_server_enabled(on);
+        }
+    }
+
+    fn set_cue_external(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_cue_server_external(on);
+        }
+    }
+
+    fn set_invert_stereo(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_mixer_invert_stereo(on);
+        }
+    }
+
+    fn set_force_mono(&self, on: bool) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.set_mixer_force_mono(on);
+        }
+    }
+
+    /// Switch the audio driver: daemon-brokered in daemon.rb mode, direct to
+    /// the engine in supervisor mode (mirrors the device-switch split).
+    fn switch_driver(&self, driver: &str) {
+        if let Backend::Real { session, runtime, .. } = self {
+            let _ = match runtime {
+                Runtime::DaemonRb(_) => session.switch_audio_driver(driver),
+                Runtime::Rust(_) => session.switch_audio_driver_direct(driver),
+            };
+        }
+    }
+
+    fn request_drivers(&self) {
+        if let Backend::Real { session, .. } = self {
+            let _ = session.request_audio_drivers();
         }
     }
 
@@ -1230,7 +1363,24 @@ struct SonicSpike {
     /// Latest device lists pushed by the engine; feed the settings pane.
     out_devices: Option<AudioDevicesInfo>,
     in_devices: Option<AudioInputDevicesInfo>,
+    /// Audio driver enumeration (`/supersonic/drivers/list.reply`).
+    drivers: Option<AudioDriversInfo>,
     settings_open: bool,
+    /// Settings prefs (persisted in prefs.conf). Spider-side ones re-apply on
+    /// SpiderReady; the run-semantics ones ride each run's preamble.
+    safe_mode: bool,
+    timing_guarantees: bool,
+    external_synths: bool,
+    /// `"*"` (all channels) or `"1"`..`"16"`.
+    midi_channel: String,
+    midi_enabled: bool,
+    cue_server: bool,
+    cue_external: bool,
+    invert_stereo: bool,
+    force_mono: bool,
+    /// Current UI language + the discovered choices.
+    lang: String,
+    langs: Vec<String>,
     /// Previous tap-tempo press, for the interval → BPM conversion.
     last_tap: Option<std::time::Instant>,
     /// Master volume slider (0..2, default 1 — mirrors the Qt preamp).
@@ -1272,16 +1422,19 @@ impl SonicSpike {
         // shared by every buffer).
         let app_root = app_root();
         let vocab = Rc::new(Vocab::load(&app_root));
-        let i18n = Rc::new(i18n::I18n::load(
-            &app_root.join("../etc/i18n"),
-            &i18n::I18n::detect_lang(),
-        ));
 
         // Ten buffers: stored content wins, then seed, then empty.
         let store_dir = store::default_store_dir();
         let prefs = store::load_prefs(&store_dir);
         let font_size: f32 =
             prefs.get("font_size").and_then(|v| v.parse().ok()).unwrap_or(14.0);
+        // Language: pref wins over the environment.
+        let lang = prefs.get("lang").cloned().unwrap_or_else(i18n::I18n::detect_lang);
+        let i18n_dir = app_root.join("../etc/i18n");
+        let i18n = Rc::new(i18n::I18n::load(&i18n_dir, &lang));
+        let langs = i18n::I18n::available_langs(&i18n_dir);
+        let pref_bool =
+            |key: &str, default: bool| prefs.get(key).map(|v| v == "true").unwrap_or(default);
         let stored = store::load_buffers(&store_dir, BUFFER_COUNT);
         let buffers: Vec<Entity<InputState>> = (0..BUFFER_COUNT)
             .map(|i| {
@@ -1373,13 +1526,27 @@ impl SonicSpike {
                                     this.playing = false;
                                 }
                             }
-                            // Device pushes → the settings pane.
+                            // Device/driver pushes → the settings pane.
                             match ev {
                                 ClientEvent::AudioDevices(d) => {
                                     this.out_devices = Some(d.clone());
                                 }
                                 ClientEvent::AudioInputDevices(d) => {
                                     this.in_devices = Some(d.clone());
+                                }
+                                ClientEvent::AudioDrivers(d) => {
+                                    this.drivers = Some(d.clone());
+                                }
+                                // Success changes the current driver — refresh
+                                // the enumeration.
+                                ClientEvent::DriverSwitched { ok: true, .. } => {
+                                    this.backend.request_drivers();
+                                }
+                                // Spider is up: re-apply the persisted
+                                // spider-side settings (MIDI, cue server,
+                                // mixer shape).
+                                ClientEvent::SpiderReady => {
+                                    this.apply_runtime_prefs();
                                 }
                                 _ => {}
                             }
@@ -1472,7 +1639,20 @@ impl SonicSpike {
             autosave_in: AUTOSAVE_TICKS,
             out_devices: None,
             in_devices: None,
+            drivers: None,
             settings_open: false,
+            // Qt defaults: safe mode ON, the rest off/all/enabled.
+            safe_mode: pref_bool("safe_mode", true),
+            timing_guarantees: pref_bool("timing_guarantees", false),
+            external_synths: pref_bool("external_synths", false),
+            midi_channel: prefs.get("midi_channel").cloned().unwrap_or_else(|| "*".into()),
+            midi_enabled: pref_bool("midi_enabled", true),
+            cue_server: pref_bool("cue_server", true),
+            cue_external: pref_bool("cue_external", false),
+            invert_stereo: pref_bool("invert_stereo", false),
+            force_mono: pref_bool("force_mono", false),
+            lang,
+            langs,
             last_tap: None,
             recording: None,
             volume,
@@ -1673,9 +1853,38 @@ impl SonicSpike {
         store::save_buffers(&self.store_dir, &texts);
     }
 
+    /// Persist one settings pref (read-modify-write keeps the others).
+    fn set_pref(&self, key: &str, value: impl ToString) {
+        let mut prefs = store::load_prefs(&self.store_dir);
+        prefs.insert(key.to_string(), value.to_string());
+        store::save_prefs(&self.store_dir, &prefs);
+    }
+
+    /// Push the persisted spider-side settings at the runtime (idempotent —
+    /// sent on SpiderReady and whenever toggled).
+    fn apply_runtime_prefs(&self) {
+        self.backend.set_midi(self.midi_enabled);
+        self.backend.set_cue_server(self.cue_server);
+        self.backend.set_cue_external(self.cue_external);
+        self.backend.set_invert_stereo(self.invert_stereo);
+        self.backend.set_force_mono(self.force_mono);
+    }
+
     /// Run the active buffer (button and Alt+R share this).
     fn run_active(&mut self, cx: &mut Context<Self>) {
-        let code = self.buffers[self.active].read(cx).value().to_string();
+        let user_code = self.buffers[self.active].read(cx).value().to_string();
+        // Qt parity: run-semantics prefs ride a #__nosave__ preamble (error
+        // lines stay buffer-relative — Spider subtracts these lines).
+        let code = format!(
+            "{}{}",
+            run_preamble(
+                self.safe_mode,
+                self.external_synths,
+                self.timing_guarantees,
+                &self.midi_channel
+            ),
+            user_code
+        );
         // A fresh run clears the previous run's error underlines.
         self.buffers[self.active].update(cx, |s, cx| {
             if let Some(set) = s.diagnostics_mut() {
@@ -2250,8 +2459,185 @@ impl SonicSpike {
             }
         }
 
+        // Audio driver picker (supervisor mode gets the enumeration reply;
+        // clicking hot-swaps via JUCE, which then re-reports devices).
+        match &self.drivers {
+            Some(d) => {
+                pane = pane.child(div().text_xs().child(format!(
+                    "{} ({})",
+                    self.i18n.tr("Audio driver"),
+                    d.current
+                )));
+                let current = d.current.clone();
+                let mut row = h_flex().gap_1().flex_wrap();
+                for (i, name) in d.drivers.iter().enumerate() {
+                    let btn = Button::new(("drv", i)).xsmall().label(name.clone());
+                    let btn = if *name == current { btn.primary() } else { btn.outline() };
+                    let name = name.clone();
+                    row = row.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                        this.backend.switch_driver(&name);
+                        this.log.push(LogLine::info(format!("→ Audio driver → {name}")));
+                        cx.notify();
+                    })));
+                }
+                pane = pane.child(row);
+            }
+            None => {
+                pane = pane.child(div().text_xs().child(format!(
+                    "{}…",
+                    self.i18n.tr("Audio driver: waiting for the engine")
+                )));
+            }
+        }
+
+        // Mixer shape (live spider toggles).
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .flex_wrap()
+                .child(self.setting_toggle("invert-stereo", "Invert stereo", self.invert_stereo, cx, |this, v| {
+                    this.invert_stereo = v;
+                    this.set_pref("invert_stereo", v);
+                    this.backend.set_invert_stereo(v);
+                }))
+                .child(self.setting_toggle("force-mono", "Force mono", self.force_mono, cx, |this, v| {
+                    this.force_mono = v;
+                    this.set_pref("force_mono", v);
+                    this.backend.set_force_mono(v);
+                })),
+        );
+
+        // MIDI: enable + default channel ("*" = all, 1..16 — rides the run
+        // preamble as use_midi_defaults, exactly like Qt).
+        let midi_ch = self.midi_channel.clone();
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(self.setting_toggle("midi-enable", "MIDI", self.midi_enabled, cx, |this, v| {
+                    this.midi_enabled = v;
+                    this.set_pref("midi_enabled", v);
+                    this.backend.set_midi(v);
+                }))
+                .child(div().text_xs().child(format!("{} {midi_ch}", self.i18n.tr("Default channel"))))
+                .child(Button::new("midi-ch-down").xsmall().outline().label("−").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.midi_channel = prev_midi_channel(&this.midi_channel);
+                        this.set_pref("midi_channel", &this.midi_channel);
+                        cx.notify();
+                    }),
+                ))
+                .child(Button::new("midi-ch-up").xsmall().outline().label("+").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.midi_channel = next_midi_channel(&this.midi_channel);
+                        this.set_pref("midi_channel", &this.midi_channel);
+                        cx.notify();
+                    }),
+                )),
+        );
+
+        // Network OSC (spider cue server).
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .flex_wrap()
+                .child(self.setting_toggle("cue-server", "Allow incoming OSC", self.cue_server, cx, |this, v| {
+                    this.cue_server = v;
+                    this.set_pref("cue_server", v);
+                    this.backend.set_cue_server(v);
+                }))
+                .child(self.setting_toggle("cue-external", "Allow remote OSC", self.cue_external, cx, |this, v| {
+                    this.cue_external = v;
+                    this.set_pref("cue_external", v);
+                    this.backend.set_cue_external(v);
+                })),
+        );
+
+        // Run semantics (preamble-applied on the next Run).
+        pane = pane.child(
+            h_flex()
+                .gap_1()
+                .flex_wrap()
+                .child(self.setting_toggle("safe-mode", "Safe mode", self.safe_mode, cx, |this, v| {
+                    this.safe_mode = v;
+                    this.set_pref("safe_mode", v);
+                }))
+                .child(self.setting_toggle("timing-guarantees", "Timing guarantees", self.timing_guarantees, cx, |this, v| {
+                    this.timing_guarantees = v;
+                    this.set_pref("timing_guarantees", v);
+                }))
+                .child(self.setting_toggle("external-synths", "External synths", self.external_synths, cx, |this, v| {
+                    this.external_synths = v;
+                    this.set_pref("external_synths", v);
+                })),
+        );
+
+        // Theme catalogue (built-ins + anything in etc/themes).
+        let themes: Vec<(SharedString, bool)> = {
+            let active = cx.theme().theme_name().clone();
+            gpui_component::ThemeRegistry::global(cx)
+                .sorted_themes()
+                .iter()
+                .map(|t| (t.name.clone(), t.name == active))
+                .collect()
+        };
+        pane = pane.child(div().text_xs().child(self.i18n.tr("Theme").to_string()));
+        let mut row = h_flex().gap_1().flex_wrap();
+        for (i, (name, current)) in themes.into_iter().enumerate() {
+            let btn = Button::new(("theme", i)).xsmall().label(name.to_string());
+            let btn = if current { btn.primary() } else { btn.outline() };
+            row = row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                let cfg = gpui_component::ThemeRegistry::global(cx)
+                    .themes()
+                    .get(&name)
+                    .cloned();
+                if let Some(cfg) = cfg {
+                    gpui_component::Theme::global_mut(cx).apply_config(&cfg);
+                    gpui_component::Theme::change(cfg.mode, Some(window), cx);
+                    this.set_pref("theme", &name);
+                }
+                cx.notify();
+            })));
+        }
+        pane = pane.child(row);
+
+        // Language picker (live reload; completes the i18n mechanism).
+        pane = pane.child(div().text_xs().child(self.i18n.tr("Language").to_string()));
+        let mut row = h_flex().gap_1().flex_wrap();
+        for (i, l) in self.langs.clone().into_iter().enumerate() {
+            let btn = Button::new(("lang", i)).xsmall().label(l.clone());
+            let btn = if l == self.lang { btn.primary() } else { btn.outline() };
+            row = row.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                this.lang = l.clone();
+                this.set_pref("lang", &l);
+                this.i18n =
+                    Rc::new(i18n::I18n::load(&app_root().join("../etc/i18n"), &l));
+                cx.notify();
+            })));
+        }
+        pane = pane.child(row);
+
         // Scroll within the pane instead of overflowing it.
         pane.overflow_y_scroll().into_any_element()
+    }
+
+    /// One ☑/☐ settings toggle button; `apply` mutates state + sends/persists.
+    fn setting_toggle(
+        &self,
+        id: &'static str,
+        label: &str,
+        on: bool,
+        cx: &mut Context<Self>,
+        apply: impl Fn(&mut Self, bool) + 'static,
+    ) -> AnyElement {
+        let text = format!("{} {}", if on { "☑" } else { "☐" }, self.i18n.tr(label));
+        let btn = Button::new(id).xsmall().label(text);
+        let btn = if on { btn.primary() } else { btn.outline() };
+        btn.on_click(cx.listener(move |this, _, _, cx| {
+            apply(this, !on);
+            cx.notify();
+        }))
+        .into_any_element()
     }
 
     /// Start/stop recording (Rec button + its a11y action share this).
@@ -2976,6 +3362,25 @@ fn main() {
         gpui_component::init(cx);
         // Sonic Pi is dark by default; ☀/☾ in the header toggles.
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+        // Theme catalogue: etc/themes/*.json joins the registry (async), then
+        // the persisted pick re-applies. watch_dir also live-reloads edits.
+        let saved_theme = store::load_prefs(&store::default_store_dir()).get("theme").cloned();
+        let _ = gpui_component::ThemeRegistry::watch_dir(
+            app_root().join("../etc/themes"),
+            cx,
+            move |cx| {
+                let Some(name) = saved_theme.clone() else { return };
+                let cfg = gpui_component::ThemeRegistry::global(cx)
+                    .themes()
+                    .get(&SharedString::from(name))
+                    .cloned();
+                if let Some(cfg) = cfg {
+                    gpui_component::Theme::global_mut(cx).apply_config(&cfg);
+                    gpui_component::Theme::change(cfg.mode, None, cx);
+                    cx.refresh_windows();
+                }
+            },
+        );
         cx.activate(true);
 
         // Live-coder shortcuts (Qt parity: Alt+R run, Alt+S stop, …). Global

@@ -35,9 +35,9 @@ mod session;
 pub use rosc;
 
 pub use client::{
-    ApiClient, AudioDevicesInfo, AudioInputDevicesInfo, ClientEvent, CueInfo, MessageData,
-    MessageInfo, MessageType, MidiInfo, MidiType, ScsynthInfo, StatusInfo, StatusType,
-    VersionInfo,
+    ApiClient, AudioDevicesInfo, AudioDriversInfo, AudioInputDevicesInfo, ClientEvent, CueInfo,
+    MessageData, MessageInfo, MessageType, MidiInfo, MidiType, ScsynthInfo, StatusInfo,
+    StatusType, VersionInfo,
 };
 pub use ports::{PortId, Ports};
 pub use session::{KeepAlive, Session};

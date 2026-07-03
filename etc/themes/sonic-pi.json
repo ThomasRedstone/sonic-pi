@@ -1,0 +1,50 @@
+{
+  "name": "Sonic Pi",
+  "author": "Sonic Oxide",
+  "themes": [
+    {
+      "name": "Sonic Pi Dark",
+      "mode": "dark",
+      "colors": {
+        "background": "#1e1e26",
+        "foreground": "#e8e6f0",
+        "title_bar.background": "#17171d",
+        "secondary.background": "#2a2a35",
+        "secondary.foreground": "#e8e6f0",
+        "muted.background": "#262630",
+        "muted.foreground": "#8f8ca3",
+        "border": "#3a3a48",
+        "input.border": "#4a4a5c",
+        "caret": "#ff1493",
+        "primary.background": "#ff1493",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#ff47ab",
+        "primary.active.background": "#d10f79",
+        "accent.background": "#33334a",
+        "accent.foreground": "#ff8fd0"
+      }
+    },
+    {
+      "name": "Sonic Pi Light",
+      "mode": "light",
+      "colors": {
+        "background": "#fbfafc",
+        "foreground": "#25232e",
+        "title_bar.background": "#f1eff4",
+        "secondary.background": "#eeecf2",
+        "secondary.foreground": "#25232e",
+        "muted.background": "#f1eff4",
+        "muted.foreground": "#75718a",
+        "border": "#dcd9e4",
+        "input.border": "#c9c5d4",
+        "caret": "#d1107a",
+        "primary.background": "#d1107a",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#e83d97",
+        "primary.active.background": "#ab0c63",
+        "accent.background": "#f6e3ee",
+        "accent.foreground": "#a90c62"
+      }
+    }
+  ]
+}

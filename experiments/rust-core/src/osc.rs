@@ -37,6 +37,9 @@ pub struct OscServer {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     port: u16,
+    /// Clone of the listening socket, for requests whose replies route back
+    /// to the request's source address (see [`Self::send_from`]).
+    sock: UdpSocket,
 }
 
 impl OscServer {
@@ -47,6 +50,7 @@ impl OscServer {
     {
         let sock = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
         let bound = sock.local_addr()?.port();
+        let send_sock = sock.try_clone()?;
         // Timeout so the loop can observe the stop flag without a wake packet.
         sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 
@@ -67,12 +71,22 @@ impl OscServer {
             }
         });
 
-        Ok(Self { stop, handle: Some(handle), port: bound })
+        Ok(Self { stop, handle: Some(handle), port: bound, sock: send_sock })
     }
 
     /// The actually-bound port (useful when started with 0).
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Send `m` to a localhost `port` FROM the listening socket — for
+    /// request/reply protocols (e.g. `/supersonic/drivers/list`) that answer
+    /// to the request's source address: the reply lands in this server's
+    /// callback instead of vanishing at a fire-and-forget sender's port.
+    pub fn send_from(&self, port: u16, m: &OscMessage) -> Result<(), CoreError> {
+        let buf = rosc::encoder::encode(&OscPacket::Message(m.clone()))?;
+        self.sock.send_to(&buf, (Ipv4Addr::LOCALHOST, port))?;
+        Ok(())
     }
 }
 
@@ -141,6 +155,23 @@ mod tests {
         sender.send(&OscMessage { addr: "/after".into(), args: vec![] }).unwrap();
         let got = rx.recv_timeout(Duration::from_secs(2)).expect("server died on garbage");
         assert_eq!(got.addr, "/after");
+    }
+
+    #[test]
+    fn send_from_originates_at_the_listening_port() {
+        let server = OscServer::start(0, |_| {}).unwrap();
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        server
+            .send_from(
+                peer.local_addr().unwrap().port(),
+                &OscMessage { addr: "/req".into(), args: vec![] },
+            )
+            .unwrap();
+        let mut buf = [0u8; 128];
+        let (_, src) = peer.recv_from(&mut buf).expect("request not received");
+        // The key property: a reply to `src` reaches the server's callback.
+        assert_eq!(src.port(), server.port());
     }
 
     #[test]

@@ -109,6 +109,13 @@ pub struct AudioDevicesInfo {
     pub sample_rate: i32,
 }
 
+/// Audio driver enumeration (`/supersonic/drivers/list.reply`).
+#[derive(Debug, Clone, Default)]
+pub struct AudioDriversInfo {
+    pub current: String,
+    pub drivers: Vec<String>,
+}
+
 /// Audio input devices pushed by the engine (`/supersonic/input-devices`).
 /// Mirrors `AudioInputDevicesInfo`.
 #[derive(Debug, Clone, Default)]
@@ -140,6 +147,9 @@ pub enum ClientEvent {
     GamepadDevices(String),
     AudioDevices(AudioDevicesInfo),
     AudioInputDevices(AudioInputDevicesInfo),
+    AudioDrivers(AudioDriversInfo),
+    /// Outcome of `/supersonic/drivers/switch` (`.reply`): ok + detail text.
+    DriverSwitched { ok: bool, detail: String },
     Scsynth(ScsynthInfo),
     /// Boot failed before the runtime came up (`/exited-with-boot-error`).
     BootError(String),

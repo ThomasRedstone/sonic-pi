@@ -21,12 +21,27 @@ pub mod addr {
     pub const SAVE_BUFFER: &str = "/save-buffer";
     pub const BUFFER_NEWLINE_AND_INDENT: &str = "/buffer-newline-and-indent";
     pub const MIXER_AMP: &str = "/mixer-amp";
+    pub const MIXER_INVERT_STEREO: &str = "/mixer-invert-stereo";
+    pub const MIXER_STANDARD_STEREO: &str = "/mixer-standard-stereo";
+    pub const MIXER_MONO_MODE: &str = "/mixer-mono-mode";
+    pub const MIXER_STEREO_MODE: &str = "/mixer-stereo-mode";
+    pub const MIDI_START: &str = "/midi-start";
+    pub const MIDI_STOP: &str = "/midi-stop";
+    pub const CUE_PORT_START: &str = "/cue-port-start";
+    pub const CUE_PORT_STOP: &str = "/cue-port-stop";
+    pub const CUE_PORT_EXTERNAL: &str = "/cue-port-external";
+    pub const CUE_PORT_INTERNAL: &str = "/cue-port-internal";
     pub const SET_GLOBAL_TIMEWARP: &str = "/set-global-timewarp";
 
     // ── Outgoing: core → Boot daemon (port `daemon`) ─────────────────────────
     pub const DAEMON_KEEP_ALIVE: &str = "/daemon/keep-alive";
     pub const DAEMON_EXIT: &str = "/daemon/exit";
     pub const DAEMON_AUDIO_SWITCH_DEVICE: &str = "/daemon/audio/switch-device";
+    pub const DAEMON_AUDIO_SWITCH_DRIVER: &str = "/daemon/audio/switch-driver";
+    pub const SUPERSONIC_DRIVERS_LIST: &str = "/supersonic/drivers/list";
+    pub const SUPERSONIC_DRIVERS_LIST_REPLY: &str = "/supersonic/drivers/list.reply";
+    pub const SUPERSONIC_DRIVERS_SWITCH: &str = "/supersonic/drivers/switch";
+    pub const SUPERSONIC_DRIVERS_SWITCH_REPLY: &str = "/supersonic/drivers/switch.reply";
 
     // ── Outgoing: core → SuperSonic (port `scsynth`) ─────────────────────────
     pub const CLOCK_TEMPO_SET: &str = "/clock/tempo/set";
@@ -171,6 +186,64 @@ pub mod out {
         )
     }
 
+    /// Spider-side settings toggles (mirror `MainWindow`'s sendOSC calls —
+    /// each is `[token]`-prefixed like `/save-and-run-buffer`):
+    /// `/mixer-invert-stereo` / `/mixer-standard-stereo`.
+    pub fn mixer_invert_stereo(token: i32, invert: bool) -> OscMessage {
+        let a = if invert { addr::MIXER_INVERT_STEREO } else { addr::MIXER_STANDARD_STEREO };
+        msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/mixer-mono-mode` / `/mixer-stereo-mode [token]` — force mono.
+    pub fn mixer_force_mono(token: i32, mono: bool) -> OscMessage {
+        let a = if mono { addr::MIXER_MONO_MODE } else { addr::MIXER_STEREO_MODE };
+        msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/midi-start` / `/midi-stop [token] [silent]` — Spider's MIDI system
+    /// (mirrors `MainWindow::toggleMidi`).
+    pub fn midi_enabled(token: i32, enabled: bool, silent: bool) -> OscMessage {
+        let a = if enabled { addr::MIDI_START } else { addr::MIDI_STOP };
+        msg(a, vec![OscType::Int(token), OscType::Int(silent as i32)])
+    }
+
+    /// `/cue-port-start` / `/cue-port-stop [token]` — Spider's incoming-OSC
+    /// cue server (mirrors `MainWindow::toggleOSCServer`).
+    pub fn cue_server_enabled(token: i32, enabled: bool) -> OscMessage {
+        let a = if enabled { addr::CUE_PORT_START } else { addr::CUE_PORT_STOP };
+        msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/cue-port-external` / `/cue-port-internal [token]` — whether the cue
+    /// server accepts OSC from remote hosts or localhost only.
+    pub fn cue_server_external(token: i32, external: bool) -> OscMessage {
+        let a = if external { addr::CUE_PORT_EXTERNAL } else { addr::CUE_PORT_INTERNAL };
+        msg(a, vec![OscType::Int(token)])
+    }
+
+    /// `/daemon/audio/switch-driver [token] [driver]` — daemon-brokered audio
+    /// driver switch (forwarded to `/supersonic/drivers/switch`, token
+    /// stripped; mirrors `MainWindow::switchAudioDriver`).
+    pub fn audio_switch_driver(token: i32, driver: &str) -> OscMessage {
+        msg(
+            addr::DAEMON_AUDIO_SWITCH_DRIVER,
+            vec![OscType::Int(token), OscType::String(driver.to_string())],
+        )
+    }
+
+    /// `/supersonic/drivers/switch [driver]` — direct engine driver switch
+    /// (supervisor mode; JUCE restarts the device on the new driver).
+    pub fn supersonic_drivers_switch(driver: &str) -> OscMessage {
+        msg(addr::SUPERSONIC_DRIVERS_SWITCH, vec![OscType::String(driver.to_string())])
+    }
+
+    /// `/supersonic/drivers/list` — request the driver enumeration. NOTE:
+    /// the reply routes to the REQUEST'S SOURCE address — send it via
+    /// `OscServer::send_from` or the reply is lost.
+    pub fn supersonic_drivers_list() -> OscMessage {
+        msg(addr::SUPERSONIC_DRIVERS_LIST, vec![])
+    }
+
     /// `/daemon/audio/switch-device [token] [output] [sampleRate] [bufferSize]
     /// [input]` — sent to the daemon (mirrors `MainWindow::sendDeviceSwitch`).
     /// Empty strings / zeros mean "leave unchanged"; input `"__none__"`
@@ -284,6 +357,26 @@ pub fn parse_incoming(m: &OscMessage) -> Option<ClientEvent> {
             sample_rate: arg_i32(m, 1),
             buffer_size: arg_i32(m, 2),
         })),
+        // `[current, driver1..driverN]`.
+        addr::SUPERSONIC_DRIVERS_LIST_REPLY => Some(E::AudioDrivers(AudioDriversInfo {
+            current: arg_str(m, 0).unwrap_or_default(),
+            drivers: (1..m.args.len()).filter_map(|i| arg_str(m, i)).collect(),
+        })),
+        // `[1, currentDriver, sampleRate, bufferSize]` or `[0, error]`.
+        addr::SUPERSONIC_DRIVERS_SWITCH_REPLY => {
+            let ok = arg_i32(m, 0) == Some(1);
+            let detail = if ok {
+                format!(
+                    "{} @ {:.0}Hz / {}",
+                    arg_str(m, 1).unwrap_or_default(),
+                    arg_f64(m, 2).unwrap_or(0.0),
+                    arg_i32(m, 3).unwrap_or(0),
+                )
+            } else {
+                arg_str(m, 1).unwrap_or_default()
+            };
+            Some(E::DriverSwitched { ok, detail })
+        }
         // Recognised families we haven't fully modelled yet (setup,
         // statechange, info text, buffer/* …).
         a if a.starts_with("/supersonic/")
@@ -360,6 +453,79 @@ fn parse_multi(m: &OscMessage) -> MessageInfo {
 mod tests {
     use super::*;
     use rosc::{OscPacket, OscType};
+
+    #[test]
+    fn settings_toggles_mirror_the_qt_wire_formats() {
+        // Each Spider-bound toggle: token-first, exact address per state.
+        let m = out::midi_enabled(7, true, false);
+        assert_eq!(m.addr, addr::MIDI_START);
+        assert_eq!(m.args, vec![OscType::Int(7), OscType::Int(0)]);
+        assert_eq!(out::midi_enabled(7, false, true).addr, addr::MIDI_STOP);
+
+        assert_eq!(out::cue_server_enabled(7, true).addr, addr::CUE_PORT_START);
+        assert_eq!(out::cue_server_enabled(7, false).addr, addr::CUE_PORT_STOP);
+        assert_eq!(out::cue_server_external(7, true).addr, addr::CUE_PORT_EXTERNAL);
+        assert_eq!(out::cue_server_external(7, false).addr, addr::CUE_PORT_INTERNAL);
+        assert_eq!(out::cue_server_enabled(7, true).args, vec![OscType::Int(7)]);
+
+        assert_eq!(out::mixer_invert_stereo(7, true).addr, addr::MIXER_INVERT_STEREO);
+        assert_eq!(out::mixer_invert_stereo(7, false).addr, addr::MIXER_STANDARD_STEREO);
+        assert_eq!(out::mixer_force_mono(7, true).addr, addr::MIXER_MONO_MODE);
+        assert_eq!(out::mixer_force_mono(7, false).addr, addr::MIXER_STEREO_MODE);
+
+        let d = out::audio_switch_driver(9, "ALSA");
+        assert_eq!(d.addr, addr::DAEMON_AUDIO_SWITCH_DRIVER);
+        assert_eq!(d.args, vec![OscType::Int(9), OscType::String("ALSA".into())]);
+        let d = out::supersonic_drivers_switch("JACK");
+        assert_eq!(d.args, vec![OscType::String("JACK".into())]);
+        assert!(out::supersonic_drivers_list().args.is_empty());
+    }
+
+    #[test]
+    fn parses_driver_list_and_switch_replies() {
+        let m = OscMessage {
+            addr: addr::SUPERSONIC_DRIVERS_LIST_REPLY.into(),
+            args: vec![
+                OscType::String("ALSA".into()),
+                OscType::String("ALSA".into()),
+                OscType::String("JACK".into()),
+            ],
+        };
+        match parse_incoming(&m) {
+            Some(ClientEvent::AudioDrivers(d)) => {
+                assert_eq!(d.current, "ALSA");
+                assert_eq!(d.drivers, vec!["ALSA".to_string(), "JACK".to_string()]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let ok = OscMessage {
+            addr: addr::SUPERSONIC_DRIVERS_SWITCH_REPLY.into(),
+            args: vec![
+                OscType::Int(1),
+                OscType::String("JACK".into()),
+                OscType::Float(48000.0),
+                OscType::Int(256),
+            ],
+        };
+        match parse_incoming(&ok) {
+            Some(ClientEvent::DriverSwitched { ok: true, detail }) => {
+                assert_eq!(detail, "JACK @ 48000Hz / 256");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let err = OscMessage {
+            addr: addr::SUPERSONIC_DRIVERS_SWITCH_REPLY.into(),
+            args: vec![OscType::Int(0), OscType::String("no such driver".into())],
+        };
+        match parse_incoming(&err) {
+            Some(ClientEvent::DriverSwitched { ok: false, detail }) => {
+                assert_eq!(detail, "no such driver");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
 
     #[test]
     fn run_buffer_roundtrips_through_the_wire() {

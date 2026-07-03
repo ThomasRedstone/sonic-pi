@@ -60,7 +60,8 @@ pub struct Session {
     daemon: UdpOscSender,
     supersonic: UdpOscSender,
     token: i32,
-    _server: OscServer,
+    scsynth_port: u16,
+    server: OscServer,
     _keep_alive: KeepAlive,
 }
 
@@ -89,13 +90,18 @@ impl Session {
         let _ = supersonic.send(&protocol::out::supersonic_devices_report(
             ports.get(PortId::GuiListenToSpider),
         ));
+        // Driver enumeration: the reply routes to the request's source, so it
+        // must leave from the incoming server's socket.
+        let _ = server
+            .send_from(ports.get(PortId::Scsynth), &protocol::out::supersonic_drivers_list());
 
         Ok(Session {
             spider,
             daemon,
             supersonic,
             token,
-            _server: server,
+            scsynth_port: ports.get(PortId::Scsynth),
+            server,
             _keep_alive: keep_alive,
         })
     }
@@ -165,6 +171,49 @@ impl Session {
             buffer_size,
             input,
         ))
+    }
+
+    /// Enable/disable Spider's MIDI subsystem (`/midi-start` / `/midi-stop`).
+    pub fn set_midi_enabled(&self, enabled: bool, silent: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::midi_enabled(self.token, enabled, silent))
+    }
+
+    /// Start/stop the incoming-OSC cue server (`/cue-port-start|stop`).
+    pub fn set_cue_server_enabled(&self, enabled: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::cue_server_enabled(self.token, enabled))
+    }
+
+    /// Cue server reachability: remote hosts vs localhost only
+    /// (`/cue-port-external|internal`).
+    pub fn set_cue_server_external(&self, external: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::cue_server_external(self.token, external))
+    }
+
+    /// Invert the stereo field (`/mixer-invert-stereo|standard-stereo`).
+    pub fn set_mixer_invert_stereo(&self, invert: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::mixer_invert_stereo(self.token, invert))
+    }
+
+    /// Force mono output (`/mixer-mono-mode|stereo-mode`).
+    pub fn set_mixer_force_mono(&self, mono: bool) -> Result<(), CoreError> {
+        self.spider.send(&protocol::out::mixer_force_mono(self.token, mono))
+    }
+
+    /// Daemon-brokered audio driver switch (`/daemon/audio/switch-driver`).
+    pub fn switch_audio_driver(&self, driver: &str) -> Result<(), CoreError> {
+        self.daemon.send(&protocol::out::audio_switch_driver(self.token, driver))
+    }
+
+    /// Direct engine driver switch (`/supersonic/drivers/switch`) — the
+    /// supervisor-mode path.
+    pub fn switch_audio_driver_direct(&self, driver: &str) -> Result<(), CoreError> {
+        self.supersonic.send(&protocol::out::supersonic_drivers_switch(driver))
+    }
+
+    /// Re-request the driver enumeration (reply surfaces as
+    /// `ClientEvent::AudioDrivers`).
+    pub fn request_audio_drivers(&self) -> Result<(), CoreError> {
+        self.server.send_from(self.scsynth_port, &protocol::out::supersonic_drivers_list())
     }
 
     pub fn token(&self) -> i32 {

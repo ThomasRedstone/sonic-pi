@@ -44,6 +44,22 @@ impl I18n {
     pub fn tr<'a>(&'a self, english: &'a str) -> &'a str {
         self.map.get(english).map(String::as_str).unwrap_or(english)
     }
+
+    /// Languages available in `dir` ("en" always first, then each `<lang>.conf`).
+    pub fn available_langs(dir: &Path) -> Vec<String> {
+        let mut langs = vec!["en".to_string()];
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            let mut found: Vec<String> = rd
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "conf"))
+                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                .filter(|l| l != "en")
+                .collect();
+            found.sort();
+            langs.extend(found);
+        }
+        langs
+    }
 }
 
 fn parse_table(text: &str) -> HashMap<String, String> {
