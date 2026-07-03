@@ -2855,6 +2855,11 @@ fn main() {
             KeyBinding::new("alt-m", AlignBuffer, None),
             KeyBinding::new("alt-]", NextBuffer, None),
             KeyBinding::new("alt-[", PrevBuffer, None),
+            // Editor built-ins (Tier 1.5 audit): gpui-component's Input context
+            // already binds ctrl-z undo / ctrl-y redo / ctrl-f find+replace
+            // (registered by gpui_component::init; code_editor() sets
+            // searchable). Add the conventional Linux redo alias it lacks:
+            KeyBinding::new("ctrl-shift-z", gpui_component::input::Redo, Some("Input")),
             KeyBinding::new("ctrl-o", OpenFile, None),
             KeyBinding::new("ctrl-s", SaveFile, None),
             KeyBinding::new("ctrl-shift-s", SaveFileAs, None),
