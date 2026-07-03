@@ -130,7 +130,10 @@ fn user_audio_settings() -> Vec<(String, String)> {
 
 /// Die-with-parent on Linux: the kernel SIGTERMs the child if this process
 /// exits for any reason. This is the crash-safety net that replaces the
-/// daemon's keep-alive kill switch.
+/// daemon's keep-alive kill switch. No-op elsewhere (mac: no PDEATHSIG
+/// equivalent — crash-safety gap documented in plan v2; win: Job Objects,
+/// future work).
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 fn die_with_parent(cmd: &mut Command) {
     #[cfg(target_os = "linux")]
     unsafe {
