@@ -7,6 +7,7 @@
 #   make package   self-contained bundle + AppDir + AppImage, all smoke-tested
 #   make e2e       full-runtime checks against the real engine
 #   make latency   boot/run/scope/cue latency baseline vs ceilings
+#   make install-launcher   desktop menu entry (runs the release binary)
 #   make qt        one-time Qt oracle build (auto-generates ruby_help.h)
 #
 # Toolchains: rust-core builds on stable; gpui-spike pins its own nightly via
@@ -19,7 +20,7 @@ REPO  := $(abspath $(ROOT)/..)
 APT_DEPS := libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libasound2-dev libjack-jackd2-dev
 
-.PHONY: deps run run-debug test coverage package e2e latency qt clean
+.PHONY: deps run run-debug test coverage package e2e latency install-launcher qt clean
 
 deps:
 	@missing=""; \
@@ -62,6 +63,18 @@ e2e:
 # Release build — measure what ships.
 latency:
 	cd $(ROOT)/rust-core && cargo run --release --example latency_probe
+
+# Desktop launcher: menu entry + icon + wrapper that runs the built release
+# binary (building it first if missing). Idempotent.
+install-launcher:
+	mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons/hicolor/512x512/apps
+	cp $(REPO)/app/gui/images/icon-smaller.png ~/.local/share/icons/hicolor/512x512/apps/sonic-oxide.png
+	printf '#!/bin/sh\nSPIKE=%s/gpui-spike\nBIN=$$SPIKE/target/release/sonic-gpui-spike\n[ -x "$$BIN" ] || (cd "$$SPIKE" && cargo build --release) || exit 1\nexec "$$BIN"\n' "$(ROOT)" > ~/.local/bin/sonic-oxide
+	chmod +x ~/.local/bin/sonic-oxide
+	printf '[Desktop Entry]\nType=Application\nName=Sonic Oxide\nComment=Live coding music synthesis (Sonic Pi, oxidised)\nExec=%s/.local/bin/sonic-oxide\nIcon=sonic-oxide\nCategories=AudioVideo;Audio;\nKeywords=music;live;coding;synth;sonic;pi;\nTerminal=false\nStartupWMClass=sonic-gpui-spike\n' "$$HOME" > ~/.local/share/applications/sonic-oxide.desktop
+	-update-desktop-database ~/.local/share/applications 2>/dev/null
+	-gtk-update-icon-cache ~/.local/share/icons/hicolor 2>/dev/null
+	@echo "installed: Sonic Oxide is in the app menu"
 
 # The Qt oracle. linux-config.sh now self-heals the ruby_help.h footgun.
 qt:
