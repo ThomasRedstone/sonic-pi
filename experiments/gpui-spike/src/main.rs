@@ -2086,19 +2086,15 @@ impl SonicSpike {
             let peers = m.get(metrics_idx::LINK_PEERS).unwrap_or(0);
             format!("{bpm:.1} BPM · Link {peers}")
         });
-        h_flex()
-            .w_full()
-            .p_2()
+        // The control cluster lives in a shrinkable, WRAPPING middle section:
+        // on narrow windows it flows onto extra rows instead of pushing the
+        // window controls (– □ ✕) off the right edge.
+        let controls = h_flex()
+            .flex_1()
+            .min_w(px(0.))
+            .flex_wrap()
             .gap_2()
-            .bg(cx.theme().title_bar)
-            // Title doubles as the drag handle (no server-side decorations
-            // on GNOME Wayland — we ARE the titlebar).
-            .child(
-                div()
-                    .flex_1()
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
-                    .child("Sonic Oxide"),
-            )
+            .justify_end()
             .child(
                 div()
                     .text_xs()
@@ -2280,25 +2276,46 @@ impl SonicSpike {
                     cx,
                 )
             })
+            ;
+
+        h_flex()
+            .w_full()
+            .p_2()
+            .gap_2()
+            .items_start()
+            .bg(cx.theme().title_bar)
+            // Title doubles as the drag handle (no server-side decorations
+            // on GNOME Wayland — we ARE the titlebar).
+            .child(
+                div()
+                    .py_1()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+                    .child("Sonic Oxide"),
+            )
+            .child(controls)
             // Window controls: GNOME Wayland gives us no server-side
-            // decorations, so minimise/maximise/close live here. Close goes
-            // through remove_window → on_window_closed → the clean-shutdown
-            // quit path.
-            .child(div().w_4())
+            // decorations, so minimise/maximise/close live here — a flex-none
+            // group pinned top-right, immune to the middle section's width.
+            // Close goes through remove_window → on_window_closed → the
+            // clean-shutdown quit path.
             .child(
-                Button::new("win-min")
-                    .label("–")
-                    .on_click(|_, window, _| window.minimize_window()),
-            )
-            .child(
-                Button::new("win-max")
-                    .label("□")
-                    .on_click(|_, window, _| window.zoom_window()),
-            )
-            .child(
-                Button::new("win-close")
-                    .label("✕")
-                    .on_click(|_, window, _| window.remove_window()),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("win-min")
+                            .label("–")
+                            .on_click(|_, window, _| window.minimize_window()),
+                    )
+                    .child(
+                        Button::new("win-max")
+                            .label("□")
+                            .on_click(|_, window, _| window.zoom_window()),
+                    )
+                    .child(
+                        Button::new("win-close")
+                            .label("✕")
+                            .on_click(|_, window, _| window.remove_window()),
+                    ),
             )
     }
 
