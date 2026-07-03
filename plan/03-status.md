@@ -388,7 +388,14 @@ after Tier 1 lands. Tier 1's exit test starts that clock.
 Agreed order (Tom): harness → cross-platform → editor.
 
 1. ✅ **Conformance + latency harness** (2026-07-03) —
-   a) `latency_probe` (`make latency`) BASELINE (debug build, this machine):
+   a) `latency_probe` (`make latency`, release build) BASELINE — release ≈
+      debug (boot 2.2s Ruby-dominated; scope 425ms = engine publish
+      cadence; acks <5ms): the core's latency is NOT build-profile-bound,
+      release mainly buys GPUI render smoothness. `make run` is release
+      now (`run-debug` for iteration). Editor FOLDING was already enabled
+      (code_editor default; tree-sitter chevrons in the gutter — mouse
+      only, no upstream keybindings yet). AppImage regenerated with the
+      full feature set (71MB, smoke PASS). Original debug numbers:
       boot→spider-ready **~1.8s** (the "slow Ruby boot" assumption was
       wrong — YJIT/bytecode side-quest deprioritised; system ruby lacks
       YJIT anyway), run→first-reply **<5ms** (probe resolution),

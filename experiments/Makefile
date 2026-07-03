@@ -19,7 +19,7 @@ REPO  := $(abspath $(ROOT)/..)
 APT_DEPS := libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libasound2-dev libjack-jackd2-dev
 
-.PHONY: deps run test coverage package e2e latency qt clean
+.PHONY: deps run run-debug test coverage package e2e latency qt clean
 
 deps:
 	@missing=""; \
@@ -31,7 +31,13 @@ deps:
 	  exit 1; \
 	else echo "all system deps present"; fi
 
+# Release by default: the instrument you rehearse on should be the one
+# you'd gig with (the AppImage is release too). `make run-debug` for
+# fast-compile iteration.
 run:
+	cd $(ROOT)/gpui-spike && cargo run --release
+
+run-debug:
 	cd $(ROOT)/gpui-spike && cargo run
 
 test:
@@ -53,8 +59,9 @@ e2e:
 
 # Latency baseline (foundation harness): prints the numbers that define the
 # "live" feel and fails past its ceilings — ratchet them down over time.
+# Release build — measure what ships.
 latency:
-	cd $(ROOT)/rust-core && cargo run --example latency_probe
+	cd $(ROOT)/rust-core && cargo run --release --example latency_probe
 
 # The Qt oracle. linux-config.sh now self-heals the ruby_help.h footgun.
 qt:
