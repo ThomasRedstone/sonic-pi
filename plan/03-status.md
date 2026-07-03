@@ -401,13 +401,20 @@ Agreed order (Tom): harness → cross-platform → editor.
       sender loses the reply).
    c) Optional later: automated Qt A/B replay — do it while Qt is still
       installed and trusted; that window closes at retirement.
-2. **Cross-platform core** (prep for mac/win WITHOUT the machines):
-   - Abstract Linux-isms: PR_SET_PDEATHSIG (mac: kqueue EVFILT_PROC or
-     watchdog; win: Job Objects), /dev/shm naming, client-side window
-     controls (only needed on GNOME Wayland).
-   - KEY INSIGHT: GitHub Actions has macos + windows runners — rust-core
-     can build + unit-test on all three OSes in CI today. The local
-     machines are only needed for audio/GUI smoke.
+2. ✅ **Cross-platform core** (2026-07-03) — rust-core is green on ALL
+   THREE OSes in CI (`sonic-oxide-xplat.yml`): full unit suite on macOS
+   and Windows, including the **CreateFileMapping shm backend** (written
+   blind, `cargo check --target x86_64-pc-windows-msvc` locally first —
+   works without the MSVC linker — then verified by the shm test suite on
+   a real Windows runner, first try). `Mapping` is platform-split
+   mirroring server_shm.hpp; `segment_exists` (shm_open / named-section
+   probe) makes the supervisor readiness wait portable; windows-sys is a
+   target-gated dep. CI USAGE IS DELIBERATELY SPARING: xplat triggers only
+   on `experiments/rust-core/**` or manual dispatch (macOS bills 10x,
+   Windows 2x Linux); both workflows cancel superseded runs per ref.
+   STILL OPEN for real ports: child crash-safety off Linux (mac needs a
+   watchdog/kqueue design, win Job Objects), Ruby+SuperSonic bundling per
+   OS, GUI smoke on hardware.
 3. **Editor foundation** (upstream gpui-component): glyph metrics
    (magnifier a11y), completion-widget API (piano/slider), folding,
    bracket matching, multi-caret — prioritise by what daily use surfaces.
