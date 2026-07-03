@@ -102,6 +102,24 @@ mod tests {
     }
 
     #[test]
+    fn shipped_locales_agree_on_keys() {
+        // de and fr are maintained together (experiments/i18n-tools.py
+        // `missing <lang>` checks them against the source) — key drift
+        // between them means one got updated without the other.
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../etc/i18n");
+        let keys = |lang: &str| {
+            let text = std::fs::read_to_string(dir.join(format!("{lang}.conf"))).unwrap();
+            let mut k: Vec<String> = parse_table(&text).into_keys().collect();
+            k.sort();
+            k
+        };
+        let (de, fr) = (keys("de"), keys("fr"));
+        assert!(!de.is_empty());
+        assert_eq!(de, fr, "de.conf and fr.conf must translate the same keys");
+        assert!(I18n::available_langs(&dir).len() >= 3); // en + de + fr
+    }
+
+    #[test]
     fn parses_table_tolerantly() {
         let map = parse_table("# c\n\nA = B\nbad line\nX =\n = y\n K = V ");
         assert_eq!(map.len(), 2);

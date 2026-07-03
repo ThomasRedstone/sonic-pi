@@ -1500,7 +1500,10 @@ impl SonicSpike {
             InputState::new(window, cx).multi_line(true).default_value(CUES_EXAMPLE)
         });
         let help_query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search synths, samples, fns…"));
+            cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n.tr("Search synths, samples, fns…").to_string())
+        });
         let volume = cx.new(|_| {
             SliderState::new().min(0.0).max(2.0).step(0.05).default_value(1.0)
         });
@@ -2044,7 +2047,7 @@ impl SonicSpike {
                 div()
                     .id("volume")
                     .role(Role::Slider)
-                    .aria_label("Master volume")
+                    .aria_label(SharedString::from(self.i18n.tr("Master volume").to_string()))
                     .w(px(110.))
                     .child(Slider::new(&self.volume)),
             )
@@ -2131,7 +2134,11 @@ impl SonicSpike {
                 "Pause or resume the scope",
                 Cmd::ScopePause,
                 Button::new("scope-toggle")
-                    .label(if running { "Scope ⏸" } else { "Scope ▶" })
+                    .label(if running {
+                        format!("{} ⏸", self.i18n.tr("Scope"))
+                    } else {
+                        format!("{} ▶", self.i18n.tr("Scope"))
+                    })
                     .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::ScopePause, w, cx)))
                     .into_any_element(),
                 cx,
@@ -2800,7 +2807,7 @@ impl SonicSpike {
     /// indented by parent depth.
     fn nodes(&self, cx: &Context<Self>) -> AnyElement {
         if self.node_tree.is_none() {
-            return div().p_2().text_xs().child("Node tree: waiting for the engine…").into_any_element();
+            return div().p_2().text_xs().child(format!("{}…", self.i18n.tr("Node tree: waiting for the engine"))).into_any_element();
         }
         let parents: std::collections::HashMap<i32, i32> =
             self.node_rows.iter().map(|n| (n.id, n.parent_id)).collect();
@@ -3200,7 +3207,13 @@ impl Render for ScopePanel {
         div()
             .id("scope-panel")
             .role(Role::Image)
-            .aria_label(if live { "Audio scope waveform (live)" } else { "Audio scope waveform" })
+            .aria_label(SharedString::from(
+                self.app
+                    .read(cx)
+                    .i18n
+                    .tr(if live { "Audio scope waveform (live)" } else { "Audio scope waveform" })
+                    .to_string(),
+            ))
             .size_full()
             .overflow_hidden()
             .child(el)
@@ -3226,7 +3239,8 @@ impl Render for CuesPanel {
         let app = self.app.read(cx);
         let copy_label = format!("⧉ {}", app.i18n.tr("Copy All"));
         let cues = app.cues.clone();
-        let label: SharedString = format!("Cues log. {}", cues.read(cx).value()).into();
+        let label: SharedString =
+            format!("{}. {}", app.i18n.tr("Cues log"), cues.read(cx).value()).into();
         v_flex()
             .id("cues-panel")
             .role(Role::Group)
@@ -3255,7 +3269,8 @@ impl Render for LogPanel {
         let rows: Vec<LogLine> =
             app.log.iter().rev().filter(|l| show_debug || !l.debug).cloned().collect();
         let label: SharedString = format!(
-            "Run log. {}",
+            "{}. {}",
+            app.i18n.tr("Run log"),
             rows.iter().take(16).map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
         )
         .into();
@@ -3365,7 +3380,7 @@ impl Render for SonicSpike {
                 "tutorial",
                 self.i18n.tr("Tutorial"),
                 Role::Group,
-                "Tutorial and examples browser",
+                self.i18n.tr("Tutorial and examples browser").to_string(),
                 0.0,
                 el,
                 cx,
@@ -3376,7 +3391,7 @@ impl Render for SonicSpike {
                 "nodes",
                 self.i18n.tr("Nodes"),
                 Role::Group,
-                "Live synth node tree",
+                self.i18n.tr("Live synth node tree").to_string(),
                 0.0,
                 el,
                 cx,
@@ -3387,7 +3402,7 @@ impl Render for SonicSpike {
                 "help",
                 self.i18n.tr("Help"),
                 Role::Group,
-                "Documentation search",
+                self.i18n.tr("Documentation search").to_string(),
                 0.0,
                 el,
                 cx,
@@ -3398,7 +3413,7 @@ impl Render for SonicSpike {
                 "settings",
                 self.i18n.tr("Settings"),
                 Role::Group,
-                "Audio settings",
+                self.i18n.tr("Audio settings").to_string(),
                 0.0,
                 el,
                 cx,

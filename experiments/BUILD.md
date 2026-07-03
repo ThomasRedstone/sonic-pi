@@ -31,10 +31,24 @@ minutes; after that it's seconds.
 | `SONIC_OXIDE_DAEMON=1` | boot via classic daemon.rb instead of the supervisor (A/B oracle) |
 | `SONIC_OXIDE_APP_ROOT` | where the Sonic Pi `app/` runtime lives (bundles set this) |
 | `SONIC_OXIDE_RUBY` | explicit ruby interpreter (else bundled, else system) |
-| `SONIC_OXIDE_LANG` | UI language (else `LANG`; locales in `etc/i18n/`) |
+| `SONIC_OXIDE_LANG` | UI language (else the `lang` pref, else `LANG`; locales in `etc/i18n/`) |
 | `SONIC_OXIDE_DEBUG_CHILDREN=1` | inherit Spider/SuperSonic stdio (debugging) |
 | `SONIC_SPIKE_AUTOQUIT=<secs>` | quit via the clean-shutdown path (CI/smoke hook) |
 | `SONIC_OXIDE_BOOT_TIMEOUT_SECS` | engine-readiness wait (tests use stubs + 1s) |
+
+## i18n workflow
+
+Locales are English-keyed `key = value` tables in `etc/i18n/<lang>.conf`
+(gettext message shape). `experiments/i18n-tools.py`:
+
+- `extract` — every translatable key used by the GPUI sources
+- `missing <lang>` — keys the source uses that `<lang>.conf` lacks (exit 1
+  if any; CI-friendly)
+- `to-po <lang>` / `from-po <file.po>` — round-trip to gettext `.po` for
+  translation platforms
+
+Shipped locales (de, fr) must translate the same key set — a unit test
+(`shipped_locales_agree_on_keys`) enforces it.
 
 ## Packaging output
 
