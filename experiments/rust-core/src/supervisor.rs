@@ -24,7 +24,7 @@
 //! A/B fallback until they land.
 
 use std::net::UdpSocket;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -198,16 +198,25 @@ impl Supervisor {
         let supersonic =
             cmd.spawn().map_err(|e| CoreError::Spawn(format!("spawning supersonic: {e}")))?;
 
-        // The engine publishes /dev/shm/SuperSonic_<port> once it is up —
-        // the same readiness signal the shm readers use.
+        // The engine publishes its shm segment (`/SuperSonic_<port>`) once it
+        // is up — the same readiness signal the shm readers use, probed
+        // portably via shm_open (macOS segments have no /dev/shm presence).
         // (SONIC_OXIDE_BOOT_TIMEOUT_SECS tunes the wait — tests use stubs.)
         let boot_timeout = std::env::var("SONIC_OXIDE_BOOT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(15);
-        let shm_path = PathBuf::from(format!("/dev/shm/SuperSonic_{scsynth}"));
+        #[cfg(unix)]
+        let engine_up =
+            || crate::audio::shm::segment_exists(&format!("/SuperSonic_{scsynth}"));
+        // Windows: no POSIX shm — until the CreateFileMapping backend lands,
+        // readiness falls back to a fixed grace period.
+        #[cfg(not(unix))]
+        let boot_at = Instant::now();
+        #[cfg(not(unix))]
+        let engine_up = || boot_at.elapsed() > Duration::from_secs(5);
         let deadline = Instant::now() + Duration::from_secs(boot_timeout);
-        while !shm_path.exists() {
+        while !engine_up() {
             if Instant::now() >= deadline {
                 let mut child = supersonic;
                 let _ = child.kill();

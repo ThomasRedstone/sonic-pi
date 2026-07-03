@@ -10,9 +10,13 @@
 //! the display ballistics (instant attack, timed release, peak-hold) the C++
 //! `AudioProcessor` applies before handing frames to the client.
 
+// POSIX shm only — the Windows CreateFileMapping backend is future work
+// (plan v2, cross-platform); everything else in the crate is portable.
+#[cfg(unix)]
 pub mod shm;
 pub mod spectrum;
 
+#[cfg(unix)]
 pub use shm::{
     metrics_idx, MetricsReader, NodeInfo, NodeTreeReader, ScopeReader, ScopeSlotReader,
     ScopeWriter, SCOPE_SHM_NAME, SHM_AUDIO_CHANNELS, SHM_AUDIO_FRAMES, SHM_AUDIO_SAMPLE_RATE,

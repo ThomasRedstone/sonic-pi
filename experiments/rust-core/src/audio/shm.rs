@@ -56,6 +56,20 @@ pub const SHM_AUDIO_MASTER_SLOT: u32 = 0;
 /// Segment header MAGIC (0x5C09E006 = "unified layout + Link metrics").
 pub const SEGMENT_MAGIC: u32 = 0x5C09_E006;
 
+/// True once a POSIX shm segment named `name` exists. The portable
+/// readiness probe (checking `/dev/shm/<name>` only works on Linux;
+/// macOS shm segments have no filesystem presence).
+pub fn segment_exists(name: &str) -> bool {
+    let Ok(c) = std::ffi::CString::new(name) else { return false };
+    let fd = unsafe { libc::shm_open(c.as_ptr(), libc::O_RDONLY, 0) };
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+        true
+    } else {
+        false
+    }
+}
+
 /// Where the blob starts within the segment (past the header). 16-aligned and
 /// comfortably larger than `size_of::<ShmSegmentHeader>()`.
 const BLOB_OFFSET: u32 = 256;

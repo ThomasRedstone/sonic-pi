@@ -226,9 +226,12 @@ impl Session {
     }
 
     /// Direct engine driver switch (`/supersonic/drivers/switch`) — the
-    /// supervisor-mode path.
+    /// supervisor-mode path. Sent from the incoming server's socket: the
+    /// engine's `.reply` routes to the request's source, so this is how
+    /// `ClientEvent::DriverSwitched` actually reaches the client.
     pub fn switch_audio_driver_direct(&self, driver: &str) -> Result<(), CoreError> {
-        self.supersonic.send(&protocol::out::supersonic_drivers_switch(driver))
+        self.server
+            .send_from(self.scsynth_port, &protocol::out::supersonic_drivers_switch(driver))
     }
 
     /// Re-request the driver enumeration (reply surfaces as
