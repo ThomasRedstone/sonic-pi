@@ -1141,6 +1141,39 @@ enum ScopeSource {
     Detached,
 }
 
+/// Scope display modes (Qt ScopeWindow parity: mono, stereo, mirror,
+/// Lissajous, spectrum). The header button cycles through them.
+#[derive(Clone, Copy, PartialEq)]
+enum ScopeMode {
+    Mono,
+    Stereo,
+    Mirror,
+    Lissajous,
+    Spectrum,
+}
+
+impl ScopeMode {
+    fn next(self) -> ScopeMode {
+        match self {
+            ScopeMode::Mono => ScopeMode::Stereo,
+            ScopeMode::Stereo => ScopeMode::Mirror,
+            ScopeMode::Mirror => ScopeMode::Lissajous,
+            ScopeMode::Lissajous => ScopeMode::Spectrum,
+            ScopeMode::Spectrum => ScopeMode::Mono,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ScopeMode::Mono => "Mono",
+            ScopeMode::Stereo => "Stereo",
+            ScopeMode::Mirror => "Mirror",
+            ScopeMode::Lissajous => "Liss",
+            ScopeMode::Spectrum => "Spec",
+        }
+    }
+}
+
 struct SonicSpike {
     buffers: Vec<Entity<InputState>>,
     /// Where each buffer was opened from / last saved to (Ctrl+S reuses it;
@@ -1161,10 +1194,12 @@ struct SonicSpike {
     /// Collapsed panes (by pane id) — click a pane's title bar to fold it.
     collapsed: std::collections::HashSet<&'static str>,
     /// Latest real waveform window (kept between publishes so the scope
-    /// doesn't blank when the engine is silent).
+    /// doesn't blank when the engine is silent). Left channel / mono.
     scope_samples: Vec<f32>,
-    /// Scope display mode: waveform or FFT spectrum.
-    show_spectrum: bool,
+    /// Right channel of the same window (mono sources mirror the left).
+    scope_right: Vec<f32>,
+    /// Scope display mode (mono/stereo/mirror/Lissajous/spectrum).
+    scope_mode: ScopeMode,
     /// Rolling mono window feeding the FFT (last FRAME_SAMPLES samples).
     spectrum_rolling: Vec<f32>,
     spectrum_proc: SpectrumProcessor,
@@ -1409,7 +1444,8 @@ impl SonicSpike {
             show_debug: false,
             collapsed: std::collections::HashSet::new(),
             scope_samples: Vec::new(),
-            show_spectrum: false,
+            scope_right: Vec::new(),
+            scope_mode: ScopeMode::Mono,
             spectrum_rolling: Vec::new(),
             spectrum_proc: SpectrumProcessor::new(),
             spectrum_frame: None,
@@ -1480,7 +1516,7 @@ impl SonicSpike {
                 };
             }
             ScopeSource::RealSlot(r) => {
-                if r.pull_latest_mono(&mut self.scope_samples) {
+                if r.pull_latest_stereo(&mut self.scope_samples, &mut self.scope_right) {
                     self.scope_live = true;
                     self.feed_spectrum();
                 }
@@ -1489,6 +1525,8 @@ impl SonicSpike {
                 let mut buf = Vec::new();
                 if r.read_latest_mono(&mut buf, 1024) {
                     self.scope_samples = buf;
+                    // The fake ring is mono; stereo modes mirror it.
+                    self.scope_right = self.scope_samples.clone();
                     self.scope_live = true;
                     self.feed_spectrum();
                 }
@@ -1504,7 +1542,7 @@ impl SonicSpike {
                 }
             }
         }
-        if self.show_spectrum && self.scope_live {
+        if self.scope_mode == ScopeMode::Spectrum && self.scope_live {
             let sample_rate = self
                 .out_devices
                 .as_ref()
@@ -1819,10 +1857,10 @@ impl SonicSpike {
             ))
             .child(self.a11y_ctl(
                 "a11y-scope-mode",
-                "Switch scope between waveform and spectrum",
+                "Cycle scope display mode",
                 Cmd::ScopeMode,
                 Button::new("scope-mode")
-                    .label(if self.show_spectrum { "〰 Wave" } else { "▁▃▅ Spec" })
+                    .label(format!("〰 {}", self.scope_mode.label()))
                     .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::ScopeMode, w, cx)))
                     .into_any_element(),
                 cx,
@@ -2144,7 +2182,7 @@ impl SonicSpike {
                 cx.notify();
             }
             Cmd::ScopeMode => {
-                self.show_spectrum = !self.show_spectrum;
+                self.scope_mode = self.scope_mode.next();
                 cx.notify();
             }
             Cmd::Settings => {
@@ -2352,21 +2390,57 @@ impl SonicSpike {
     /// sine otherwise. The window itself is pulled in `poll_scope`.
     fn scope(&self, cx: &App) -> (AnyElement, bool) {
         let live = self.scope_live && !self.scope_samples.is_empty();
-        if self.show_spectrum && live {
+        if self.scope_mode == ScopeMode::Spectrum && live {
             return (self.spectrum_el(cx), true);
         }
         let color = cx.theme().primary;
-        let mut samples: Vec<f32> = if live { self.scope_samples.clone() } else { Vec::new() };
+        let right_color = run_color(3); // palette green — distinct from primary
+        let mode = self.scope_mode;
 
-        if !live {
+        let (left, right) = if live {
+            let l = self.scope_samples.clone();
+            let r = if self.scope_right.len() == l.len() {
+                self.scope_right.clone()
+            } else {
+                l.clone()
+            };
+            (l, r)
+        } else {
+            // Demo signal: sine left, cosine right (a circle in Lissajous).
             let n = 128usize;
             let phase = self.phase;
-            samples = (0..n)
-                .map(|i| {
-                    let t = i as f32 / n as f32;
-                    ((t * std::f32::consts::TAU * 3.0) + phase).sin() * (1.0 - t).max(0.0)
-                })
-                .collect();
+            let wave = |f: fn(f32) -> f32| {
+                (0..n)
+                    .map(|i| {
+                        let t = i as f32 / n as f32;
+                        f((t * std::f32::consts::TAU * 3.0) + phase) * (1.0 - t).max(0.0)
+                    })
+                    .collect::<Vec<f32>>()
+            };
+            (wave(f32::sin), wave(f32::cos))
+        };
+
+        /// One waveform trace as vertical bars around a midline.
+        fn trace(
+            window: &mut Window,
+            samples: &[f32],
+            x0: f32,
+            bw: f32,
+            mid: f32,
+            half: f32,
+            color: Hsla,
+        ) {
+            let bar_w = (bw / samples.len() as f32).max(1.0);
+            for (i, s) in samples.iter().enumerate() {
+                let h = (s.abs() * half).max(1.0);
+                let x = x0 + i as f32 * bar_w;
+                let y = if *s >= 0.0 { mid - h } else { mid };
+                let bar = Bounds {
+                    origin: point(px(x), px(y)),
+                    size: size(px((bar_w * 0.8).max(1.0)), px(h)),
+                };
+                window.paint_quad(fill(bar, color));
+            }
         }
 
         let el = div()
@@ -2376,22 +2450,72 @@ impl SonicSpike {
                 canvas(
                     move |_, _, _| {},
                     move |bounds, _, window, _| {
-                        if samples.is_empty() {
+                        if left.is_empty() {
                             return;
                         }
                         let bw = f32::from(bounds.size.width);
                         let bh = f32::from(bounds.size.height);
-                        let mid = f32::from(bounds.origin.y) + bh / 2.0;
-                        let bar_w = (bw / samples.len() as f32).max(1.0);
-                        for (i, s) in samples.iter().enumerate() {
-                            let h = (s.abs() * bh / 2.0).max(1.0);
-                            let x = f32::from(bounds.origin.x) + i as f32 * bar_w;
-                            let y = if *s >= 0.0 { mid - h } else { mid };
-                            let bar = Bounds {
-                                origin: point(px(x), px(y)),
-                                size: size(px((bar_w * 0.8).max(1.0)), px(h)),
-                            };
-                            window.paint_quad(fill(bar, color));
+                        let x0 = f32::from(bounds.origin.x);
+                        let y0 = f32::from(bounds.origin.y);
+                        match mode {
+                            ScopeMode::Mono | ScopeMode::Spectrum => {
+                                // Spectrum lands here while no data has flowed
+                                // yet — draw the waveform demo instead.
+                                trace(window, &left, x0, bw, y0 + bh / 2.0, bh / 2.0, color);
+                            }
+                            ScopeMode::Stereo => {
+                                // Two half-height traces: left on top.
+                                trace(window, &left, x0, bw, y0 + bh * 0.25, bh * 0.25, color);
+                                trace(
+                                    window, &right, x0, bw, y0 + bh * 0.75, bh * 0.25,
+                                    right_color,
+                                );
+                            }
+                            ScopeMode::Mirror => {
+                                // Left rises from the midline, right mirrors below.
+                                let mid = y0 + bh / 2.0;
+                                let bar_w = (bw / left.len() as f32).max(1.0);
+                                for i in 0..left.len() {
+                                    let x = x0 + i as f32 * bar_w;
+                                    let w = (bar_w * 0.8).max(1.0);
+                                    let lh = (left[i].abs() * bh / 2.0).max(1.0);
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x), px(mid - lh)),
+                                            size: size(px(w), px(lh)),
+                                        },
+                                        color,
+                                    ));
+                                    let rh =
+                                        (right.get(i).copied().unwrap_or(0.0).abs() * bh / 2.0)
+                                            .max(1.0);
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(x), px(mid)),
+                                            size: size(px(w), px(rh)),
+                                        },
+                                        right_color,
+                                    ));
+                                }
+                            }
+                            ScopeMode::Lissajous => {
+                                // X = left sample, Y = right sample, dot per frame.
+                                let (cx_, cy) = (x0 + bw / 2.0, y0 + bh / 2.0);
+                                let scale = bw.min(bh) / 2.0;
+                                for i in 0..left.len() {
+                                    let sx = cx_ + left[i].clamp(-1.0, 1.0) * scale;
+                                    let sy =
+                                        cy - right.get(i).copied().unwrap_or(0.0).clamp(-1.0, 1.0)
+                                            * scale;
+                                    window.paint_quad(fill(
+                                        Bounds {
+                                            origin: point(px(sx), px(sy)),
+                                            size: size(px(2.0), px(2.0)),
+                                        },
+                                        color,
+                                    ));
+                                }
+                            }
                         }
                     },
                 )

@@ -522,34 +522,60 @@ impl ScopeSlotReader {
         }
     }
 
+    /// The newest published region's base pointer, or None when the slot is
+    /// inactive or nothing new was published since the last pull.
+    fn pull_latest_region(&mut self) -> Option<*const f32> {
+        unsafe {
+            if !self.is_active() {
+                return None;
+            }
+            let stage = (*(self.slot.add(SCOPE_SLOT_STAGE_OFF) as *const AtomicI32))
+                .load(Ordering::Acquire);
+            if !(0..=2).contains(&stage) || stage == self.last_stage {
+                return None;
+            }
+            self.last_stage = stage;
+            let region_floats = (self.frames * self.channels) as usize;
+            Some(self.slot.add(self.data_off as usize + stage as usize * region_floats * 4)
+                as *const f32)
+        }
+    }
+
     /// Pull channel 0 of the newest published region into `out`. Returns false
     /// when the slot is inactive or nothing new was published since the last
     /// pull (the previous contents of `out` are then left untouched, so a
     /// caller can keep drawing the last frame).
     pub fn pull_latest_mono(&mut self, out: &mut Vec<f32>) -> bool {
+        let Some(region) = self.pull_latest_region() else { return false };
         unsafe {
-            if !self.is_active() {
-                return false;
-            }
-            let stage = (*(self.slot.add(SCOPE_SLOT_STAGE_OFF) as *const AtomicI32))
-                .load(Ordering::Acquire);
-            if !(0..=2).contains(&stage) || stage == self.last_stage {
-                return false;
-            }
-            self.last_stage = stage;
-            let region_floats = (self.frames * self.channels) as usize;
-            let region = self
-                .slot
-                .add(self.data_off as usize + stage as usize * region_floats * 4)
-                as *const f32;
             out.clear();
             out.reserve(self.frames as usize);
             // Planar layout: channel 0 is the first `frames` floats.
             for i in 0..self.frames as usize {
                 out.push(region.add(i).read_volatile());
             }
-            true
         }
+        true
+    }
+
+    /// Pull channels 0 and 1 of the newest published region (planar: ch1 is
+    /// the second `frames` floats). A mono slot mirrors ch0 into `right`.
+    /// Same publish/no-change semantics as [`Self::pull_latest_mono`].
+    pub fn pull_latest_stereo(&mut self, left: &mut Vec<f32>, right: &mut Vec<f32>) -> bool {
+        let Some(region) = self.pull_latest_region() else { return false };
+        let frames = self.frames as usize;
+        let ch1 = if self.channels >= 2 { frames } else { 0 };
+        unsafe {
+            left.clear();
+            left.reserve(frames);
+            right.clear();
+            right.reserve(frames);
+            for i in 0..frames {
+                left.push(region.add(i).read_volatile());
+                right.push(region.add(ch1 + i).read_volatile());
+            }
+        }
+        true
     }
 }
 
@@ -830,6 +856,27 @@ mod tests {
         // Same stage again → no new data, buffer untouched.
         assert!(!r.pull_latest_mono(&mut out));
         assert_eq!(out.len(), frames as usize);
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        assert!(!r.pull_latest_stereo(&mut left, &mut right), "same stage must not re-pull");
+
+        // Publish stage 2 with distinct planar channels: ch0 = 0.5, ch1 = -0.5.
+        unsafe {
+            let slot = map
+                .ptr
+                .add(BLOB_OFFSET as usize + scope_off as usize + scope_header_bytes as usize);
+            let region2 = slot.add(slot_header as usize + 2 * (frames * channels) as usize * 4)
+                as *mut f32;
+            for i in 0..frames as usize {
+                region2.add(i).write(0.5); // ch0 plane
+                region2.add(frames as usize + i).write(-0.5); // ch1 plane
+            }
+            (*(slot.add(SCOPE_SLOT_STAGE_OFF) as *mut AtomicI32)).store(2, Ordering::Release);
+        }
+        assert!(r.pull_latest_stereo(&mut left, &mut right));
+        assert_eq!((left.len(), right.len()), (frames as usize, frames as usize));
+        assert!(left.iter().all(|&s| (s - 0.5).abs() < 1e-6), "left {left:?}");
+        assert!(right.iter().all(|&s| (s + 0.5).abs() < 1e-6), "right {right:?}");
 
         // Slot 1 doesn't exist; opening it must fail cleanly.
         assert!(ScopeSlotReader::open(name, 1).is_err());
