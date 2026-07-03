@@ -1025,6 +1025,20 @@ struct LineRun {
     char_lengths: Vec<u8>,
     /// Word start indices in characters (u8-capped, so truncated at 255).
     word_starts: Vec<u8>,
+    /// Rendered geometry (magnifier a11y), when a screen reader is active
+    /// and the line is in the viewport.
+    geometry: Option<RunGeometry>,
+}
+
+/// Per-run glyph geometry in SCALED physical pixels (the space GPUI writes
+/// AccessKit bounds in): the run's rect, plus per-character x offsets
+/// (relative to the rect) and widths — what screen magnifiers use to track
+/// the caret.
+#[derive(Clone)]
+struct RunGeometry {
+    bounds: accesskit::Rect,
+    positions: Vec<f32>,
+    widths: Vec<f32>,
 }
 
 /// Split buffer text into per-line AccessKit runs.
@@ -1038,9 +1052,74 @@ fn line_runs(text: &str) -> Vec<LineRun> {
             let value = if i == last { line.to_string() } else { format!("{line}\n") };
             let char_lengths: Vec<u8> = value.chars().map(|c| c.len_utf8() as u8).collect();
             let word_starts = word_starts(&value);
-            LineRun { value, char_lengths, word_starts }
+            LineRun { value, char_lengths, word_starts, geometry: None }
         })
         .collect()
+}
+
+/// Compute each line's [`RunGeometry`] from the editor's rendered layout.
+/// `range_to_bounds` returns `None` for lines outside the viewport — those
+/// runs simply omit the geometry properties (magnifiers follow the caret,
+/// which is on a visible line by definition). Character counts must match
+/// the run's `character_lengths`, so the trailing `\n` gets a zero-width
+/// slot at the line's end.
+fn attach_run_geometry(runs: &mut [LineRun], state: &InputState, scale: f32) {
+    let mut line_start = 0usize;
+    for run in runs.iter_mut() {
+        let has_newline = run.value.ends_with('\n');
+        let line = if has_newline { &run.value[..run.value.len() - 1] } else { &run.value[..] };
+
+        run.geometry = (|| {
+            let mut char_bounds: Vec<Bounds<Pixels>> = Vec::new();
+            let mut i = line_start;
+            for c in line.chars() {
+                let b = state.range_to_bounds(&(i..i + c.len_utf8()))?;
+                char_bounds.push(b);
+                i += c.len_utf8();
+            }
+            // Empty line: a zero-width probe at the line start still yields
+            // a line-height rect (range_to_bounds adds the line height).
+            if char_bounds.is_empty() {
+                char_bounds.push(state.range_to_bounds(&(line_start..line_start))?);
+            }
+            let x0 = char_bounds.iter().map(|b| f32::from(b.origin.x)).fold(f32::MAX, f32::min);
+            let y0 = char_bounds.iter().map(|b| f32::from(b.origin.y)).fold(f32::MAX, f32::min);
+            let x1 = char_bounds
+                .iter()
+                .map(|b| f32::from(b.origin.x) + f32::from(b.size.width))
+                .fold(f32::MIN, f32::max);
+            let y1 = char_bounds
+                .iter()
+                .map(|b| f32::from(b.origin.y) + f32::from(b.size.height))
+                .fold(f32::MIN, f32::max);
+
+            let mut positions: Vec<f32> = Vec::new();
+            let mut widths: Vec<f32> = Vec::new();
+            if !line.is_empty() {
+                for b in &char_bounds {
+                    positions.push((f32::from(b.origin.x) - x0) * scale);
+                    widths.push(f32::from(b.size.width) * scale);
+                }
+            }
+            // The break character sits zero-width at the line's end (an
+            // empty FINAL line has zero characters — no entries at all).
+            if has_newline {
+                positions.push((x1 - x0) * scale);
+                widths.push(0.0);
+            }
+            Some(RunGeometry {
+                bounds: accesskit::Rect {
+                    x0: (x0 * scale) as f64,
+                    y0: (y0 * scale) as f64,
+                    x1: (x1 * scale) as f64,
+                    y1: (y1 * scale) as f64,
+                },
+                positions,
+                widths,
+            })
+        })();
+        line_start += line.len() + 1;
+    }
 }
 
 /// Word starts (in characters) for one run. Code-editor flavoured: a word is a
@@ -1137,6 +1216,14 @@ impl Element for TextRunA11y {
         node.set_value(self.run.value.clone());
         node.set_character_lengths(self.run.char_lengths.clone());
         node.set_word_starts(self.run.word_starts.clone());
+        // Glyph geometry (screen magnifiers): explicit bounds survive — GPUI
+        // writes the layout bounds BEFORE this hook (element.rs), and this
+        // element's layout box is zero-sized anyway.
+        if let Some(g) = &self.run.geometry {
+            node.set_bounds(g.bounds);
+            node.set_character_positions(g.positions.clone());
+            node.set_character_widths(g.widths.clone());
+        }
     }
 
     fn request_layout(
@@ -1192,6 +1279,10 @@ struct EditorA11y {
     selection: std::ops::Range<usize>,
     cursor: usize,
     run_ids: Rc<RefCell<Vec<accesskit::NodeId>>>,
+    /// Set when write_a11y_info runs — GPUI only calls it while a screen
+    /// reader is active, so this is the (one-frame-lagged) signal that
+    /// gates the per-character geometry work in render.
+    a11y_seen: Rc<std::cell::Cell<bool>>,
     run_count: usize,
     runs: Vec<AnyElement>,
     inner: AnyElement,
@@ -1203,10 +1294,12 @@ impl EditorA11y {
         selection: std::ops::Range<usize>,
         cursor: usize,
         run_ids: Rc<RefCell<Vec<accesskit::NodeId>>>,
+        a11y_seen: Rc<std::cell::Cell<bool>>,
+        mut line_runs: Vec<LineRun>,
         inner: AnyElement,
     ) -> Self {
-        let runs: Vec<AnyElement> = line_runs(&value)
-            .into_iter()
+        let runs: Vec<AnyElement> = line_runs
+            .drain(..)
             .enumerate()
             .map(|(i, run)| {
                 TextRunA11y {
@@ -1225,6 +1318,7 @@ impl EditorA11y {
             selection,
             cursor,
             run_ids,
+            a11y_seen,
             run_count,
             runs,
             inner,
@@ -1263,6 +1357,9 @@ impl Element for EditorA11y {
     }
 
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
+        // Only called while a screen reader is active — remember that, so
+        // render invests in per-character geometry from the next frame on.
+        self.a11y_seen.set(true);
         node.set_label("Sonic Pi code editor");
         node.set_value(self.value.to_string());
         // Anchor = the fixed end (whichever selection end isn't the caret);
@@ -1503,6 +1600,10 @@ struct SonicSpike {
     /// AccessKit NodeIds of the editor's text-run children, recorded during
     /// prepaint and consumed (one frame later) for the a11y caret/selection.
     editor_run_ids: Rc<RefCell<Vec<accesskit::NodeId>>>,
+    /// Latched true once a screen reader has consumed the editor's a11y
+    /// node; gates the per-character glyph-geometry work (sticky — the
+    /// AccessKit adapter can't deactivate in-process anyway).
+    editor_a11y_seen: Rc<std::cell::Cell<bool>>,
 }
 
 impl SonicSpike {
@@ -1779,6 +1880,7 @@ impl SonicSpike {
             cues_live: false,
             first_cue_at: None,
             editor_run_ids: Rc::new(RefCell::new(Vec::new())),
+            editor_a11y_seen: Rc::new(std::cell::Cell::new(false)),
         }
     }
 
@@ -3589,17 +3691,28 @@ impl Render for SonicSpike {
         let editor_body = v_flex()
             .size_full()
             .child(self.tab_row(cx))
-            .child(EditorA11y::new(
-                code,
-                selection,
-                caret,
-                self.editor_run_ids.clone(),
-                Input::new(&editor)
-                    .size_full()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(px(self.font_size))
-                    .into_any_element(),
-            ));
+            .child({
+                // Per-character glyph geometry costs a range_to_bounds call
+                // per visible character — only spent once a screen reader
+                // has actually read the editor node.
+                let mut runs = line_runs(&code);
+                if self.editor_a11y_seen.get() {
+                    attach_run_geometry(&mut runs, editor.read(cx), window.scale_factor());
+                }
+                EditorA11y::new(
+                    code,
+                    selection,
+                    caret,
+                    self.editor_run_ids.clone(),
+                    self.editor_a11y_seen.clone(),
+                    runs,
+                    Input::new(&editor)
+                        .size_full()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(px(self.font_size))
+                        .into_any_element(),
+                )
+            });
 
         let settings_el = self.settings_open.then(|| self.settings(cx));
         let help_el = self.help_open.then(|| self.help(cx));

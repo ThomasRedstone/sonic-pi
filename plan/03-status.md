@@ -406,7 +406,17 @@ Agreed order (Tom): harness → cross-platform → editor.
 3. **Editor foundation** (upstream gpui-component): glyph metrics
    (magnifier a11y), completion-widget API (piano/slider), folding,
    bracket matching, multi-caret — prioritise by what daily use surfaces.
-   FINDING (2026-07-03): glyph metrics need NO upstream change —
+   ✅ GLYPH METRICS IMPLEMENTED (2026-07-03): TextRun nodes now carry
+   bounds + character_positions/widths (physical px) for visible lines.
+   Cost gating: geometry is only computed after a screen reader has
+   actually read the editor node (write_a11y_info doubles as the activity
+   signal — GPUI only calls it while a11y is active; latched, one-frame
+   lag). GPUI sets default node bounds BEFORE write_a11y_info, so our
+   explicit bounds survive (element.rs:466-472). REMAINING: the AT-SPI
+   walk to verify magnifier tracking — needs the Orca session
+   (SPEAKS ALOUD — coordinate with Tom), plus a cost measurement with a
+   full screen of text.
+   Original finding: glyph metrics need NO upstream change —
    `InputState::range_to_bounds(byte_range) -> Option<Bounds<Pixels>>` is
    public (window coords; None off-viewport, a natural visible-lines
    gate), plus public `line_height()`. Plan: per-char bounds for visible
