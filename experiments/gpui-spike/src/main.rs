@@ -1216,6 +1216,10 @@ impl Element for TextRunA11y {
         node.set_value(self.run.value.clone());
         node.set_character_lengths(self.run.char_lengths.clone());
         node.set_word_starts(self.run.word_starts.clone());
+        // REQUIRED for extents: accesskit_consumer returns empty character
+        // rects when a run has no text_direction (text.rs), so the AT-SPI
+        // GetCharacterExtents answers -1 without this.
+        node.set_text_direction(accesskit::TextDirection::LeftToRight);
         // Glyph geometry (screen magnifiers): explicit bounds survive — GPUI
         // writes the layout bounds BEFORE this hook (element.rs), and this
         // element's layout box is zero-sized anyway.

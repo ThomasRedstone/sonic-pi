@@ -411,8 +411,14 @@ Agreed order (Tom): harness → cross-platform → editor.
 3. **Editor foundation** (upstream gpui-component): glyph metrics
    (magnifier a11y), completion-widget API (piano/slider), folding,
    bracket matching, multi-caret — prioritise by what daily use surfaces.
-   ✅ GLYPH METRICS IMPLEMENTED (2026-07-03): TextRun nodes now carry
-   bounds + character_positions/widths (physical px) for visible lines.
+   ✅ GLYPH METRICS IMPLEMENTED + AT-SPI VERIFIED (2026-07-03): TextRun
+   nodes carry bounds + character_positions/widths (physical px) for
+   visible lines. **GetCharacterExtents answers real rects** — monospace
+   grid confirmed (~10.5px advance, 25px line step across a line break).
+   GOTCHA: accesskit_consumer returns EMPTY character rects when a run
+   lacks `text_direction` (its text.rs bails to Some(vec![])) — the
+   AT-SPI reply is silently `-1 -1 -1 -1`. Always set
+   set_text_direction(LeftToRight) on TextRun nodes.
    Cost gating: geometry is only computed after a screen reader has
    actually read the editor node (write_a11y_info doubles as the activity
    signal — GPUI only calls it while a11y is active; latched, one-frame
