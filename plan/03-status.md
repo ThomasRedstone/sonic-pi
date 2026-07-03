@@ -286,15 +286,45 @@ DockArea — drag tabs to stack/rearrange, dividers to resize. Toggled
 panes (settings/help/nodes) stay stacked above it. Verified: tests green,
 lifecycle E2E clean; visual drag check is the user's.
 
-## Remaining tail (nothing left that this machine + this codebase can do)
+## THE PLAN from here (2026-07-03; parity audit: loop ~90%, product ~60%)
 
-1. **Upstream** (gpui-component): completion-menu widgets (piano/slider),
-   editor a11y glyph metrics — PRs/issues, external cadence.
-2. **i18n**: .po migration + more locales (mechanism + de demo done).
-3. **Packaging**: mac/windows scripts (need those machines). CI AppImage
-   artifacts on every push: DONE.
-4. **Qt retirement** per roadmap exit criteria — REQUIRES sustained
-   side-by-side daily use (weeks). Both apps run; comparison enabled.
+### Tier 1 — the live-coding loop to 100% (in order)
+
+1. **Master volume slider** — the mixer amp control (find the exact OSC the
+   Qt GUI sends — `mainwindow.cpp` volume slider handler — mirror it in
+   `protocol::out` + a header slider). The single most-missed control.
+2. **Editor font size** — Ctrl+= / Ctrl+- / Ctrl+0 zoom, persisted with the
+   workspace. Essential for performing + teaching.
+3. **File open/save** — GPUI native path prompts (`prompt_for_paths` /
+   `prompt_for_new_path`) to load/save `.rb` files into/from the active
+   buffer; recent-files list later.
+4. **Scope modes** — stereo + mirror + Lissajous like Qt's ScopeWindow.
+   Needs `ScopeSlotReader::pull_latest_stereo` (planar ch1 already sits in
+   the slot; we read ch0 only).
+5. **Editor built-ins audit** — verify undo/redo & find work (gpui-component
+   ships them); bind/document whatever's missing.
+
+Exit test for Tier 1: a full performance rehearsal on Oxide with the Qt app
+closed, no reach-for-the-other-app moments.
+
+### Tier 2 — product gaps (rough order)
+
+1. **Tutorial + examples browser** — the teaching soul: render
+   `etc/doc/tutorial/*.md` (markdown pane, chapter nav) + `etc/examples`
+   loader. Biggest single gap to "this is Sonic Pi".
+2. **Settings breadth** — audio driver picker, safe mode, MIDI enable +
+   default channel, OSC network opts (external IPs), theme catalogue,
+   language picker (i18n mechanism is live).
+3. **Session/file management** — recent files, buffer naming.
+4. **i18n**: extract remaining strings → .po tooling → locales beyond de.
+5. **mac/windows** — build scripts + runtime paths per OS (needs machines).
+6. **Upstream gpui-component** — completion-menu custom widgets
+   (piano/slider), editor glyph metrics for magnifier a11y.
+
+### The gate
+
+**Qt retirement** (roadmap exit criteria): sustained side-by-side daily use
+after Tier 1 lands. Tier 1's exit test starts that clock.
 
 ## Done 2026-07-02 (earlier session — 13 tests)
 

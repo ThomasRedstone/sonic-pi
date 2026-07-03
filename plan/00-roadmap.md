@@ -104,21 +104,27 @@ layout exactly (`#[repr(C)]`, same atomics/ordering). Everything else is routine
 Folding `daemon.rb`'s supervision (kill-switch, keep-alive, port alloc) into the
 Rust core drops one Ruby process (4 processes → 3).
 
-## Phased migration
+## Phased migration — status as of 2026-07-03
 
 Each phase ships and is self-validating against the current app.
 
-0. **Quick win (independent of the rewrite)** — wire up cross-pane copy in the
-   existing Qt app (`addUniversalCopyShortcuts` is commented out at
-   `app/gui/mainwindow.cpp:645`). Delivers the copy feel immediately.
-1. **Rust core behind the existing contract** — reimplement `app/api` in Rust as
-   a drop-in speaking the same OSC/shm to Spider + SuperSonic, **keeping the Qt
-   GUI on top**. The existing UI is the oracle: if Sonic Pi still works
-   unchanged, the Rust core is correct. Proves the hardest bit (the shm ring).
-2. **New GPUI frontend** — build against the proven Rust core; run side-by-side
-   with Qt until parity.
-3. **Retire Qt** — fold daemon supervision into the Rust core; drop the C++ GUI
-   and the per-platform build scripts.
+0. ✅ **Quick win** — Log/Cues "Copy All" landed in the Qt app,
+   runtime-verified.
+1. ✅ **Rust core behind the existing contract** — `sonicpi-core` speaks the
+   full OSC/shm contract (95% line coverage, golden-traffic regression
+   fixtures from real sessions). The planned C-ABI shim was consciously
+   dropped: validation happens via golden fixtures + side-by-side use
+   instead of relinking the Qt GUI.
+2. ✅ **New GPUI frontend (Sonic Oxide)** — the live-coding loop is at ~90%
+   parity (plan/03-status.md has the exact gap list), running side-by-side
+   with Qt. Editor a11y (AT-SPI Text interface) exceeds Qt.
+3. ◕ **Consolidate** — daemon supervision folded into the core (3 processes,
+   kernel-guaranteed cleanup, supervisor is the default boot);
+   self-contained Linux packaging (71MB AppImage, CI artifacts). REMAINING:
+   loop-to-100% + product gaps (03-status has the ordered plan),
+   mac/windows, and the Qt retirement gate (sustained side-by-side use).
+4. **Retire Qt** — drop the C++ GUI, app/api and the per-platform build
+   scripts once the gate opens.
 
 ## Open risks / things not to lose
 
