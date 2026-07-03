@@ -2278,7 +2278,7 @@ impl SonicSpike {
 // no listener re-plumbing needed for these three).
 
 macro_rules! oxide_panel {
-    ($name:ident, $panel_id:literal) => {
+    ($name:ident, $panel_id:literal, $title:literal) => {
         struct $name {
             app: Entity<SonicSpike>,
             focus: FocusHandle,
@@ -2304,13 +2304,27 @@ macro_rules! oxide_panel {
             fn panel_name(&self) -> &'static str {
                 $panel_id
             }
+
+            fn tab_name(&self, cx: &App) -> Option<SharedString> {
+                Some(SharedString::from(self.app.read(cx).i18n.tr($title).to_string()))
+            }
+
+            fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                SharedString::from(self.app.read(cx).i18n.tr($title).to_string())
+            }
+
+            // The three core panes have no re-open affordance yet — keep the
+            // tab's ✕ away until a "View" menu exists.
+            fn closable(&self, _cx: &App) -> bool {
+                false
+            }
         }
     };
 }
 
-oxide_panel!(ScopePanel, "scope");
-oxide_panel!(CuesPanel, "cues");
-oxide_panel!(LogPanel, "log");
+oxide_panel!(ScopePanel, "scope", "Scope");
+oxide_panel!(CuesPanel, "cues", "Cues");
+oxide_panel!(LogPanel, "log", "Log");
 
 impl Render for ScopePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2325,17 +2339,41 @@ impl Render for ScopePanel {
     }
 }
 
+/// Thin per-pane action row: an xsmall "⧉ Copy All" button, usable while the
+/// pane's content is being rewritten live (selection-based copying isn't).
+fn copy_all_row(
+    id: &'static str,
+    label: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .justify_end()
+        .px_1()
+        .child(Button::new(id).xsmall().ghost().label(label).on_click(on_click))
+}
+
 impl Render for CuesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cues = self.app.read(cx).cues.clone();
+        let app = self.app.read(cx);
+        let copy_label = format!("⧉ {}", app.i18n.tr("Copy All"));
+        let cues = app.cues.clone();
         let label: SharedString = format!("Cues log. {}", cues.read(cx).value()).into();
-        div()
+        v_flex()
             .id("cues-panel")
             .role(Role::Group)
             .aria_label(label)
             .size_full()
             .overflow_hidden()
-            .child(Input::new(&cues).h_full())
+            .child(copy_all_row(
+                "cues-copy-all",
+                copy_label,
+                cx.listener(|this, _, _, cx| {
+                    let text = this.app.read(cx).cues.read(cx).value().to_string();
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }),
+            ))
+            .child(div().flex_1().min_h(px(0.)).child(Input::new(&cues).h_full()))
     }
 }
 
@@ -2343,11 +2381,14 @@ impl Render for LogPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.read(cx);
         let show_debug = app.show_debug;
+        let copy_label = format!("⧉ {}", app.i18n.tr("Copy All"));
+        // Newest-first: the latest line is always visible without scrolling
+        // (mid-performance), and the whole scrollback is reachable below.
         let rows: Vec<LogLine> =
-            app.log.iter().rev().filter(|l| show_debug || !l.debug).take(16).cloned().collect();
+            app.log.iter().rev().filter(|l| show_debug || !l.debug).cloned().collect();
         let label: SharedString = format!(
             "Run log. {}",
-            rows.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
+            rows.iter().take(16).map(|l| l.text.as_str()).collect::<Vec<_>>().join(". ")
         )
         .into();
         let log_fg = cx.theme().foreground;
@@ -2358,15 +2399,40 @@ impl Render for LogPanel {
             .aria_label(label)
             .size_full()
             .overflow_hidden()
-            .p_1()
-            .text_xs()
-            .font_family(cx.theme().mono_font_family.clone())
-            .children(rows.into_iter().map(move |l| {
-                let color = if l.error { log_err } else { l.run.map(run_color).unwrap_or(log_fg) };
-                let row = div().text_color(color);
-                let row = if l.indent { row.pl_4() } else { row };
-                row.child(l.text)
-            }))
+            .child(copy_all_row(
+                "log-copy-all",
+                copy_label,
+                cx.listener(|this, _, _, cx| {
+                    // Clipboard gets chronological order (paste-friendly).
+                    let app = this.app.read(cx);
+                    let show_debug = app.show_debug;
+                    let text: String = app
+                        .log
+                        .iter()
+                        .filter(|l| show_debug || !l.debug)
+                        .map(|l| l.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }),
+            ))
+            .child(
+                v_flex()
+                    .id("log-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .p_1()
+                    .text_xs()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .children(rows.into_iter().map(move |l| {
+                        let color =
+                            if l.error { log_err } else { l.run.map(run_color).unwrap_or(log_fg) };
+                        let row = div().text_color(color);
+                        let row = if l.indent { row.pl_4() } else { row };
+                        row.child(l.text)
+                    })),
+            )
     }
 }
 
