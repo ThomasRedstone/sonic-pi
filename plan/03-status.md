@@ -290,11 +290,11 @@ lifecycle E2E clean; visual drag check is the user's.
 
 ### Tier 1 — the live-coding loop to 100% (in order)
 
-1. **Master volume slider** — the mixer amp control (find the exact OSC the
-   Qt GUI sends — `mainwindow.cpp` volume slider handler — mirror it in
-   `protocol::out` + a header slider). The single most-missed control.
-2. **Editor font size** — Ctrl+= / Ctrl+- / Ctrl+0 zoom, persisted with the
-   workspace. Essential for performing + teaching.
+1. ✅ **Master volume slider** (2026-07-03) — header slider → `/mixer-amp`
+   (token, amp 0..2, silent — `changeSystemPreAmp` wire format, loopback-
+   asserted).
+2. ✅ **Editor font size** (2026-07-03) — Ctrl+=/-/0, 8..40 clamp, persisted
+   in prefs.conf (`store::load_prefs`/`save_prefs`, round-trip tested).
 3. **File open/save** — GPUI native path prompts (`prompt_for_paths` /
    `prompt_for_new_path`) to load/save `.rb` files into/from the active
    buffer; recent-files list later.
