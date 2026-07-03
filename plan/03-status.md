@@ -351,10 +351,11 @@ hasn't started.**
 - rust-core grew: settings-toggle protocol builders (wire-format tested),
   `AudioDrivers`/`DriverSwitched` events, `Session` setting methods,
   `OscServer::send_from` (source-routed request/reply).
-- NOT YET runtime-verified: the whole settings batch landed while Tom's
-  rehearsal used the audio device (a second engine would contend for it) —
-  run `make -C experiments e2e` + a SONIC_SPIKE_AUTOQUIT run when free.
-  Driver switching + MIDI/cue toggles also want a hands-on check.
+- Runtime-verified post-rehearsal: `make e2e` PASS (supervisor + record)
+  and AUTOQUIT smoke clean on the settings build. Gotcha: an e2e run in
+  the first seconds after an app quit can FAIL transiently — the audio
+  device is still settling; rerun before diagnosing. Driver switching +
+  MIDI/cue toggles still want a HANDS-ON check (Log echoes each send).
 - Themes: sparse ThemeConfig JSONs inherit unset colors from the mode's
   defaults; `Theme::apply_config` + `Theme::change(cfg.mode, …)` applies.
   The catalogue only lists after watch_dir's async load lands.
