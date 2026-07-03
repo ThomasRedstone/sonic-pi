@@ -98,3 +98,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&fake_home);
     }
 }
+
+/// Tiny prefs table (font size, …) beside the buffers — `key = value` lines.
+pub fn load_prefs(dir: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(dir.join("prefs.conf")) {
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    map
+}
+
+pub fn save_prefs(dir: &Path, prefs: &std::collections::HashMap<String, String>) {
+    let _ = std::fs::create_dir_all(dir);
+    let mut lines: Vec<String> = prefs.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+    lines.sort();
+    let _ = std::fs::write(dir.join("prefs.conf"), lines.join("\n") + "\n");
+}
+
+#[cfg(test)]
+mod prefs_tests {
+    use super::*;
+
+    #[test]
+    fn prefs_round_trip() {
+        let dir = std::env::temp_dir().join("sonic_oxide_prefs_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(load_prefs(&dir).is_empty());
+        let mut p = std::collections::HashMap::new();
+        p.insert("font_size".to_string(), "18".to_string());
+        save_prefs(&dir, &p);
+        assert_eq!(load_prefs(&dir)["font_size"], "18");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

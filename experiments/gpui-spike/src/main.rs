@@ -27,7 +27,7 @@ use std::time::Duration;
 use vocab::{word_prefix_at, Vocab, VocabKind};
 
 // Live-coding keyboard shortcuts (bound in `main`, handled on the root view).
-actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer]);
+actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer, ZoomIn, ZoomOut, ZoomReset]);
 
 /// Header commands — one identity shared by mouse clicks, keyboard actions
 /// and screen-reader Click actions.
@@ -1169,6 +1169,8 @@ struct SonicSpike {
     last_tap: Option<std::time::Instant>,
     /// Master volume slider (0..2, default 1 — mirrors the Qt preamp).
     volume: Entity<SliderState>,
+    /// Editor font size (Ctrl+=/-/0), persisted in prefs.conf.
+    font_size: f32,
     /// Path of the in-flight recording, if any.
     recording: Option<PathBuf>,
     /// Help pane: the loaded vocabulary doubles as the docs index.
@@ -1204,6 +1206,9 @@ impl SonicSpike {
 
         // Ten buffers: stored content wins, then seed, then empty.
         let store_dir = store::default_store_dir();
+        let prefs = store::load_prefs(&store_dir);
+        let font_size: f32 =
+            prefs.get("font_size").and_then(|v| v.parse().ok()).unwrap_or(14.0);
         let stored = store::load_buffers(&store_dir, BUFFER_COUNT);
         let buffers: Vec<Entity<InputState>> = (0..BUFFER_COUNT)
             .map(|i| {
@@ -1396,6 +1401,7 @@ impl SonicSpike {
             last_tap: None,
             recording: None,
             volume,
+            font_size,
             vocab,
             i18n,
             help_open: false,
@@ -1488,6 +1494,15 @@ impl SonicSpike {
         if overflow > 0 {
             self.spectrum_rolling.drain(0..overflow);
         }
+    }
+
+    /// Adjust the editor font size (clamped 8..40) and persist it.
+    fn zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.font_size = if delta == 0.0 { 14.0 } else { (self.font_size + delta).clamp(8.0, 40.0) };
+        let mut prefs = store::load_prefs(&self.store_dir);
+        prefs.insert("font_size".to_string(), format!("{}", self.font_size));
+        store::save_prefs(&self.store_dir, &prefs);
+        cx.notify();
     }
 
     /// Persist all buffers to the workspace store (autosave + quit path).
@@ -2402,7 +2417,7 @@ impl Render for SonicSpike {
                 Input::new(&editor)
                     .size_full()
                     .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(cx.theme().mono_font_size)
+                    .text_size(px(self.font_size))
                     .into_any_element(),
             ));
 
@@ -2469,6 +2484,9 @@ impl Render for SonicSpike {
                 let next = (this.active + 1) % this.buffers.len();
                 this.select_buffer(next, cx);
             }))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(1.0, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(-1.0, cx)))
+            .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.zoom(0.0, cx)))
             .on_action(cx.listener(|this, _: &PrevBuffer, _, cx| {
                 let prev = (this.active + this.buffers.len() - 1) % this.buffers.len();
                 this.select_buffer(prev, cx);
@@ -2507,6 +2525,9 @@ fn main() {
             KeyBinding::new("alt-m", AlignBuffer, None),
             KeyBinding::new("alt-]", NextBuffer, None),
             KeyBinding::new("alt-[", PrevBuffer, None),
+            KeyBinding::new("ctrl-=", ZoomIn, None),
+            KeyBinding::new("ctrl--", ZoomOut, None),
+            KeyBinding::new("ctrl-0", ZoomReset, None),
         ]);
 
         // Closing the last window quits the app (which fires the on_app_quit
