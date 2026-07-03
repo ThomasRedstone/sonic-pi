@@ -52,6 +52,11 @@ jobs:
       - name: Tests (headless — pure helpers, vocab, a11y geometry, store)
         working-directory: experiments/gpui-spike
         run: cargo test
+      # Static commands only — no workflow event data is interpolated.
+      - name: i18n completeness (every source string translated in each locale)
+        run: |
+          python3 experiments/i18n-tools.py missing de
+          python3 experiments/i18n-tools.py missing fr
 
   package:
     name: Linux bundle + AppImage (artifacts)
