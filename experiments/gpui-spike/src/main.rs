@@ -16,6 +16,7 @@
 
 mod i18n;
 mod store;
+mod tutorial;
 mod vocab;
 
 use std::cell::RefCell;
@@ -44,6 +45,7 @@ enum Cmd {
     ScopeMode,
     Settings,
     Help,
+    Tutorial,
     Nodes,
     Debug,
 }
@@ -1244,6 +1246,13 @@ struct SonicSpike {
     help_open: bool,
     help_query: Entity<InputState>,
     help_selected: Option<String>,
+    /// Tutorial + examples browser (Tier 2.1). Content loads on first open.
+    tutorial_open: bool,
+    chapters: Option<Vec<tutorial::Chapter>>,
+    examples: Option<Vec<tutorial::Example>>,
+    /// Selected chapter index + its markdown source.
+    chapter_ix: Option<usize>,
+    chapter_body: SharedString,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -1473,6 +1482,11 @@ impl SonicSpike {
             help_open: false,
             help_query,
             help_selected: None,
+            tutorial_open: false,
+            chapters: None,
+            examples: None,
+            chapter_ix: None,
+            chapter_body: SharedString::default(),
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -1889,6 +1903,16 @@ impl SonicSpike {
                 cx,
             ))
             .child(self.a11y_ctl(
+                "a11y-tutorial",
+                "Toggle tutorial pane",
+                Cmd::Tutorial,
+                Button::new("tutorial-toggle")
+                    .label("📖")
+                    .on_click(cx.listener(|this, _, w, cx| this.dispatch(Cmd::Tutorial, w, cx)))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(self.a11y_ctl(
                 "a11y-help",
                 "Toggle help pane",
                 Cmd::Help,
@@ -2012,6 +2036,93 @@ impl SonicSpike {
         }
 
         pane.into_any_element()
+    }
+
+    /// Tutorial + examples browser: chapter nav on the left, rendered
+    /// markdown on the right; examples load straight into the active buffer.
+    fn tutorial(&self, cx: &mut Context<Self>) -> AnyElement {
+        let chapters = self.chapters.as_deref().unwrap_or(&[]);
+        let examples = self.examples.as_deref().unwrap_or(&[]);
+        let muted = cx.theme().muted_foreground;
+
+        // Left column: every chapter in curriculum order, then the examples.
+        let mut nav = v_flex().id("tutorial-nav").w(px(190.)).overflow_y_scroll().gap_0p5().p_1();
+        for (i, ch) in chapters.iter().enumerate() {
+            let btn = Button::new(("tut-ch", i)).xsmall().label(ch.title.clone());
+            let btn = if self.chapter_ix == Some(i) { btn.primary() } else { btn.ghost() };
+            nav = nav.child(btn.on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(ch) = this.chapters.as_ref().and_then(|c| c.get(i)) {
+                    this.chapter_body =
+                        std::fs::read_to_string(&ch.path).unwrap_or_default().into();
+                    this.chapter_ix = Some(i);
+                }
+                cx.notify();
+            })));
+        }
+        nav = nav.child(
+            div().px_1().pt_2().text_xs().text_color(muted).child(
+                self.i18n.tr("Examples").to_string(),
+            ),
+        );
+        let mut last_cat = "";
+        for (i, ex) in examples.iter().enumerate() {
+            if ex.category != last_cat {
+                last_cat = &ex.category;
+                nav = nav.child(
+                    div().px_1().text_xs().text_color(muted).child(ex.category.clone()),
+                );
+            }
+            nav = nav.child(
+                Button::new(("tut-ex", i)).xsmall().ghost().label(format!("♪ {}", ex.name)).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        let Some(ex) = this.examples.as_ref().and_then(|e| e.get(i)) else {
+                            return;
+                        };
+                        match std::fs::read_to_string(&ex.path) {
+                            Ok(code) => {
+                                let b = this.active;
+                                this.buffers[b]
+                                    .update(cx, |s, cx| s.set_value(code, window, cx));
+                                this.log.push(LogLine::info(format!(
+                                    "→ Example {}/{} loaded into buffer {}",
+                                    ex.category,
+                                    ex.name,
+                                    b + 1
+                                )));
+                            }
+                            Err(e) => this.log.push(LogLine::error(format!(
+                                "Example {} failed: {e}",
+                                ex.path.display()
+                            ))),
+                        }
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+
+        // Right: the chapter markdown (gpui-component TextView), or a hint.
+        let body: AnyElement = if self.chapter_ix.is_some() {
+            div()
+                .id("tutorial-body")
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_y_scroll()
+                .p_2()
+                .text_sm()
+                .child(gpui_component::text::markdown(self.chapter_body.clone()))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .p_2()
+                .text_sm()
+                .text_color(muted)
+                .child(self.i18n.tr("Pick a chapter — or load an example into the buffer.").to_string())
+                .into_any_element()
+        };
+
+        h_flex().size_full().items_start().child(nav.h_full()).child(body).into_any_element()
     }
 
     /// Nudge the Link tempo by `delta` BPM (metrics give the current value).
@@ -2191,6 +2302,15 @@ impl SonicSpike {
             }
             Cmd::Help => {
                 self.help_open = !self.help_open;
+                cx.notify();
+            }
+            Cmd::Tutorial => {
+                self.tutorial_open = !self.tutorial_open;
+                if self.tutorial_open && self.chapters.is_none() {
+                    let root = app_root();
+                    self.chapters = Some(tutorial::load_chapters(&root.join("../etc/doc/tutorial")));
+                    self.examples = Some(tutorial::load_examples(&root.join("../etc/examples")));
+                }
                 cx.notify();
             }
             Cmd::Nodes => {
@@ -2744,8 +2864,20 @@ impl Render for SonicSpike {
 
         let settings_el = self.settings_open.then(|| self.settings(cx));
         let help_el = self.help_open.then(|| self.help(cx));
+        let tutorial_el = self.tutorial_open.then(|| self.tutorial(cx));
         let nodes_el = self.nodes_open.then(|| self.nodes(cx));
         let mut right = v_flex().size_full().gap_2().p_2();
+        if let Some(el) = tutorial_el {
+            right = right.child(self.pane(
+                "tutorial",
+                self.i18n.tr("Tutorial"),
+                Role::Group,
+                "Tutorial and examples browser",
+                0.0,
+                el,
+                cx,
+            ));
+        }
         if let Some(el) = nodes_el {
             right = right.child(self.pane(
                 "nodes",
