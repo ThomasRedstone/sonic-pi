@@ -1811,6 +1811,14 @@ struct SonicSpike {
     /// Selected chapter index + its markdown source.
     chapter_ix: Option<usize>,
     chapter_body: SharedString,
+    /// Runnable code blocks extracted from the selected chapter (plan
+    /// `05-teaching-mode.md`) — one "▶ Example N" button per block.
+    chapter_blocks: Vec<tutorial::CodeBlock>,
+    /// Tutorial scratch buffer: a wholly separate editor entity (never one
+    /// of the user's 10 numbered buffers) that a tutorial example's Run
+    /// button loads into. `show_scratch` swaps the Editor pane to show it.
+    scratch: Entity<InputState>,
+    show_scratch: bool,
     log: Vec<LogLine>,
     /// Cue lines decoded from `/incoming/osc`, waiting for the next render
     /// (appending to the cues editor needs a `&mut Window`).
@@ -1867,6 +1875,20 @@ impl SonicSpike {
                 })
             })
             .collect();
+        // Tutorial scratch buffer (plan `05-teaching-mode.md`): a wholly
+        // separate entity from `buffers`, so a "▶ Example" click can never
+        // touch the user's own numbered buffers.
+        let scratch = {
+            let vocab = vocab.clone();
+            cx.new(|cx| {
+                let mut state = InputState::new(window, cx)
+                    .code_editor("ruby")
+                    .line_number(true)
+                    .soft_wrap(false);
+                state.lsp.completion_provider = Some(Rc::new(SonicCompletions(vocab)));
+                state
+            })
+        };
         let cues = cx.new(|cx| {
             InputState::new(window, cx).multi_line(true).default_value(CUES_EXAMPLE)
         });
@@ -2098,6 +2120,9 @@ impl SonicSpike {
             examples: None,
             chapter_ix: None,
             chapter_body: SharedString::default(),
+            chapter_blocks: Vec::new(),
+            scratch,
+            show_scratch: false,
             log: vec![LogLine::info(status)],
             pending_cues: Vec::new(),
             cues_live: false,
@@ -2324,9 +2349,30 @@ impl SonicSpike {
         self.backend.set_update_checking(self.update_checking);
     }
 
+    /// Whichever editor is currently shown: the tutorial scratch buffer
+    /// (while `show_scratch`) or the active numbered buffer. Run/Stop/
+    /// Comment/Align all operate on this — the tutorial's "try it" buttons
+    /// are a first-class target, not a special case bolted onto
+    /// `run_active`. Never aliases one of the user's 10 numbered buffers —
+    /// the scratch entity is a wholly separate field (plan
+    /// `05-teaching-mode.md`: tutorial examples must never clobber the
+    /// user's own work).
+    fn current_editor(&self) -> Entity<InputState> {
+        if self.show_scratch { self.scratch.clone() } else { self.buffers[self.active].clone() }
+    }
+
+    fn current_run_name(&self) -> String {
+        if self.show_scratch {
+            "tutorial".to_string()
+        } else {
+            format!("buffer{}", self.active)
+        }
+    }
+
     /// Run the active buffer (button and Alt+R share this).
     fn run_active(&mut self, cx: &mut Context<Self>) {
-        let user_code = self.buffers[self.active].read(cx).value().to_string();
+        let editor = self.current_editor();
+        let user_code = editor.read(cx).value().to_string();
         // Qt parity: run-semantics prefs ride a #__nosave__ preamble (error
         // lines stay buffer-relative — Spider subtracts these lines).
         let code = format!(
@@ -2341,18 +2387,21 @@ impl SonicSpike {
             user_code
         );
         // A fresh run clears the previous run's error underlines.
-        self.buffers[self.active].update(cx, |s, cx| {
+        editor.update(cx, |s, cx| {
             if let Some(set) = s.diagnostics_mut() {
                 set.clear();
             }
             cx.notify();
         });
-        self.backend.run(&format!("buffer{}", self.active), &code);
+        let name = self.current_run_name();
+        self.backend.run(&name, &code);
         self.flash = 1.0;
         self.playing = true;
         // Local echo so the click lands in the Log instantly, before the
         // spider's own reply arrives.
-        self.log.push(LogLine::info(format!("→ Run sent (buffer {})", self.active + 1)));
+        let label =
+            if self.show_scratch { "tutorial example".to_string() } else { format!("buffer {}", self.active + 1) };
+        self.log.push(LogLine::info(format!("→ Run sent ({label})")));
         cx.notify();
     }
 
@@ -2366,7 +2415,7 @@ impl SonicSpike {
     }
 
     fn comment_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ed = self.buffers[self.active].clone();
+        let ed = self.current_editor();
         let (text, sel) = {
             let s = ed.read(cx);
             (s.value().to_string(), s.selected_range())
@@ -2378,7 +2427,7 @@ impl SonicSpike {
     }
 
     fn align_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ed = self.buffers[self.active].clone();
+        let ed = self.current_editor();
         let text = ed.read(cx).value().to_string();
         let aligned = reindent(&text);
         if aligned != text {
@@ -2390,6 +2439,7 @@ impl SonicSpike {
     fn select_buffer(&mut self, i: usize, cx: &mut Context<Self>) {
         if i < self.buffers.len() {
             self.active = i;
+            self.show_scratch = false;
             cx.notify();
         }
     }
@@ -2616,7 +2666,7 @@ impl SonicSpike {
                         .rounded_sm()
                         .bg(cx.theme().danger)
                         .text_color(cx.theme().danger_foreground)
-                        .child("GIG"),
+                        .child(self.i18n.tr("GIG").to_string()),
                 )
                 .child(self.a11y_ctl(
                     "a11y-stop-performance",
@@ -2625,7 +2675,7 @@ impl SonicSpike {
                     Button::new("stop-performance")
                         .danger()
                         .outline()
-                        .label("⏏ Stop Performance")
+                        .label(format!("⏏ {}", self.i18n.tr("Stop Performance")))
                         .on_click(
                             cx.listener(|this, _, w, cx| this.dispatch(Cmd::StopPerformance, w, cx)),
                         )
@@ -2786,6 +2836,7 @@ impl SonicSpike {
                     // absolutise so the markdown view's disk loader finds them.
                     let dir = ch.path.parent().unwrap_or(Path::new("."));
                     this.chapter_body = tutorial::absolutize_image_paths(&raw, dir).into();
+                    this.chapter_blocks = tutorial::extract_code_blocks(&raw);
                     this.chapter_ix = Some(i);
                 }
                 cx.notify();
@@ -2833,17 +2884,55 @@ impl SonicSpike {
             );
         }
 
-        // Right: the chapter markdown (gpui-component TextView), or a hint.
+        // Right: the chapter markdown (gpui-component TextView) + a "try it"
+        // strip of runnable code blocks, or a hint when nothing's selected.
         let body: AnyElement = if self.chapter_ix.is_some() {
-            div()
+            let markdown = div()
                 .id("tutorial-body")
                 .flex_1()
                 .min_w(px(0.))
                 .overflow_y_scroll()
                 .p_2()
                 .text_sm()
-                .child(gpui_component::text::markdown(self.chapter_body.clone()))
-                .into_any_element()
+                .child(gpui_component::text::markdown(self.chapter_body.clone()));
+
+            let mut col = v_flex().size_full().min_h(px(0.)).child(markdown);
+            if !self.chapter_blocks.is_empty() {
+                let mut try_row = h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .p_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{}:", self.i18n.tr("Try it"))),
+                    );
+                for i in 0..self.chapter_blocks.len() {
+                    try_row = try_row.child(
+                        Button::new(("tut-run", i))
+                            .xsmall()
+                            .success()
+                            .label(format!("▶ {} {}", self.i18n.tr("Example"), i + 1))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let Some(block) = this.chapter_blocks.get(i) else { return };
+                                let text = block.text.clone();
+                                this.scratch.update(cx, |s, cx| s.set_value(text, window, cx));
+                                this.show_scratch = true;
+                                this.run_active(cx);
+                                this.log.push(LogLine::info(format!(
+                                    "→ Loaded tutorial example {} into the scratch buffer",
+                                    i + 1
+                                )));
+                                cx.notify();
+                            })),
+                    );
+                }
+                col = col.child(try_row);
+            }
+            col.into_any_element()
         } else {
             div()
                 .flex_1()
@@ -3380,15 +3469,20 @@ impl SonicSpike {
             }
             Cmd::StopPerformance => {
                 let weak = cx.entity().downgrade();
+                let title = self.i18n.tr("Stop Performance?").to_string();
+                let description = self
+                    .i18n
+                    .tr(
+                        "This ends the running gig session for good — Spider and the audio \
+                         engine will be stopped and this app will no longer be able to \
+                         reattach to them. Only the buffers you've saved survive.",
+                    )
+                    .to_string();
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     let weak = weak.clone();
                     alert
-                        .title("Stop Performance?")
-                        .description(
-                            "This ends the running gig session for good — Spider and the \
-                             audio engine will be stopped and this app will no longer be \
-                             able to reattach to them. Only the buffers you've saved survive.",
-                        )
+                        .title(title.clone())
+                        .description(description.clone())
                         .show_cancel(true)
                         .on_ok(move |_, _, app| {
                             if let Some(ent) = weak.upgrade() {
@@ -3486,9 +3580,20 @@ impl SonicSpike {
             })
             .collect();
         let mut row = h_flex().gap_1().p_1().flex_wrap();
+        if self.show_scratch {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(cx.theme().primary)
+                    .text_color(cx.theme().primary_foreground)
+                    .child(format!("📖 {}", self.i18n.tr("Tutorial"))),
+            );
+        }
         for (i, label) in labels.into_iter().enumerate() {
             let btn = Button::new(("buffer-tab", i)).label(label).xsmall();
-            let btn = if i == active { btn.primary() } else { btn };
+            let btn = if i == active && !self.show_scratch { btn.primary() } else { btn };
             row = row
                 .child(btn.on_click(cx.listener(move |this, _, _, cx| this.select_buffer(i, cx))));
         }
@@ -3979,17 +4084,21 @@ impl Render for SonicSpike {
             });
         }
 
-        let editor = self.buffers[self.active].clone();
+        let editor = self.current_editor();
 
         let code = editor.read(cx).value();
         let caret = editor.read(cx).cursor();
-        let editor_label: SharedString = format!(
-            "Sonic Pi code editor, buffer {}, {} characters, cursor at offset {}",
-            self.active + 1,
-            code.len(),
-            caret
-        )
-        .into();
+        let editor_label: SharedString = if self.show_scratch {
+            format!("Sonic Pi code editor, tutorial scratch buffer, {} characters, cursor at offset {}", code.len(), caret).into()
+        } else {
+            format!(
+                "Sonic Pi code editor, buffer {}, {} characters, cursor at offset {}",
+                self.active + 1,
+                code.len(),
+                caret
+            )
+            .into()
+        };
 
         let selection = editor.read(cx).selected_range();
         let editor_body = v_flex()

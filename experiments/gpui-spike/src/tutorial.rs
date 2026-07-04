@@ -37,6 +37,41 @@ pub fn load_chapters(tutorial_dir: &Path) -> Vec<Chapter> {
         .collect()
 }
 
+/// One fenced (```) code block extracted from a chapter, in document order —
+/// the unit a "▶ Example" button loads and runs (plan `05-teaching-mode.md`).
+pub struct CodeBlock {
+    pub text: String,
+}
+
+/// Extract every fenced code block from a chapter's raw markdown, in order.
+/// Language-tagged fences (```ruby) work too — the fence line only needs to
+/// START with three backticks; the shipped tutorial only uses bare ones.
+/// Blank blocks are dropped (a stray empty fence pair isn't runnable).
+/// Pure → unit-tested against the real chapters.
+pub fn extract_code_blocks(md: &str) -> Vec<CodeBlock> {
+    let mut blocks = Vec::new();
+    let mut in_block = false;
+    let mut current = String::new();
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_block {
+                let text = current.trim_end().to_string();
+                if !text.trim().is_empty() {
+                    blocks.push(CodeBlock { text });
+                }
+                current.clear();
+            }
+            in_block = !in_block;
+            continue;
+        }
+        if in_block {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    blocks
+}
+
 /// Rewrite a chapter's relative image URLs to absolute paths (resolved
 /// against the chapter file's directory) so the markdown view's disk loader
 /// finds them regardless of the process CWD. http(s) URLs pass through.
@@ -119,6 +154,38 @@ pub fn load_examples(examples_dir: &Path) -> Vec<Example> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn extracts_fenced_blocks_in_order() {
+        let md = "intro text\n\n```\nplay 60\nsleep 1\n```\n\nmore prose\n\n```\nsample :bd_haus\n```\n";
+        let blocks = extract_code_blocks(md);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "play 60\nsleep 1");
+        assert_eq!(blocks[1].text, "sample :bd_haus");
+    }
+
+    #[test]
+    fn empty_fences_and_unclosed_fences_are_dropped_not_panicking() {
+        assert!(extract_code_blocks("```\n```\n").is_empty());
+        assert!(extract_code_blocks("no fences here at all").is_empty());
+        // An unclosed trailing fence just never flushes — no panic, no block.
+        assert!(extract_code_blocks("```\nplay 60\n").is_empty());
+    }
+
+    #[test]
+    fn every_real_chapter_with_a_fence_yields_at_least_one_runnable_block() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../etc/doc/tutorial");
+        let mut checked = 0;
+        for ch in load_chapters(&dir) {
+            let raw = std::fs::read_to_string(&ch.path).unwrap();
+            if raw.contains("```") {
+                let blocks = extract_code_blocks(&raw);
+                assert!(!blocks.is_empty(), "{:?} has a fence but no extracted block", ch.path);
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "expected most chapters to have runnable examples, got {checked}");
+    }
 
     fn etc() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../etc")
