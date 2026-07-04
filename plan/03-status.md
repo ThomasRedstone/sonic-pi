@@ -545,6 +545,25 @@ confirm sound never stopped" check, plus a real multi-hour soak on
 hardware before trusting this on an actual stage — neither is
 automatable.
 
+## ✅ PHASE 7 (teaching mode) COMPLETE (2026-07-04)
+
+Tutorial chapters now teach: `tutorial::extract_code_blocks` (unit-tested
+against every real chapter) feeds a "▶ Example N" strip under each
+chapter's markdown; clicking loads that snippet into a dedicated
+`scratch` buffer (never the user's 10 numbered ones) and runs it through
+the same, unmodified pipeline via a new `current_editor()`/
+`current_run_name()` generalization (which also fixed a latent bug: Align/
+Comment while viewing scratch would have silently hit the wrong buffer).
+First-run: a brand-new profile (precise check —
+`!store_dir.join("prefs.conf").exists()`) auto-opens straight into chapter
+1; the empty state grew a "▶ Start here" button. New `SONIC_OXIDE_STORE_DIR`
+env override let this get a REAL e2e verification (AUTOQUIT boot against a
+throwaway dir — spider+engine alive, clean shutdown) without ever touching
+Tom's actual workspace. See `05-teaching-mode.md` for the one scope
+deviation (inline overlay buttons → a below-markdown strip; equivalent
+functionality, `range_to_bounds` turned out to be editor-only, not
+available on the markdown TextView).
+
 ## Post-parity phases (2026-07-04)
 
 Loop/product parity (Tiers 1-2) and the foundation workstream (harness,
