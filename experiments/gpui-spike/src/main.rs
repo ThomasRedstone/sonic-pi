@@ -1845,6 +1845,10 @@ impl SonicSpike {
 
         // Ten buffers: stored content wins, then seed, then empty.
         let store_dir = store::default_store_dir();
+        // Precise "never configured" signal (plan 05-teaching-mode.md):
+        // load_prefs treats a missing file the same as an empty one, so we
+        // check existence directly, before anything can create the file.
+        let first_run = !store_dir.join("prefs.conf").exists();
         let prefs = store::load_prefs(&store_dir);
         let font_size: f32 =
             prefs.get("font_size").and_then(|v| v.parse().ok()).unwrap_or(14.0);
@@ -2048,6 +2052,31 @@ impl SonicSpike {
             .collect();
         let recent = prefs.get("recent_files").map(|v| decode_recent(v)).unwrap_or_default();
 
+        // First run (plan 05-teaching-mode.md): a brand-new profile opens
+        // straight into the tutorial's first chapter instead of a blank
+        // screen — the same content-loading + selection work
+        // `Cmd::Tutorial`'s dispatch arm does, just done eagerly here.
+        let (tutorial_open, chapters, examples, chapter_ix, chapter_body, chapter_blocks) =
+            if first_run {
+                let chapters = tutorial::load_chapters(&app_root.join("../etc/doc/tutorial"));
+                let examples = tutorial::load_examples(&app_root.join("../etc/examples"));
+                let (body, blocks) = match chapters.first() {
+                    Some(ch) => {
+                        let raw = std::fs::read_to_string(&ch.path).unwrap_or_default();
+                        let dir = ch.path.parent().unwrap_or(Path::new("."));
+                        (
+                            tutorial::absolutize_image_paths(&raw, dir),
+                            tutorial::extract_code_blocks(&raw),
+                        )
+                    }
+                    None => (String::new(), Vec::new()),
+                };
+                let first_ix = (!chapters.is_empty()).then_some(0);
+                (true, Some(chapters), Some(examples), first_ix, body.into(), blocks)
+            } else {
+                (false, None, None, None, SharedString::default(), Vec::new())
+            };
+
         Self {
             buffers,
             file_paths,
@@ -2115,12 +2144,12 @@ impl SonicSpike {
             help_query,
             help_selected: None,
             help_kind: None,
-            tutorial_open: false,
-            chapters: None,
-            examples: None,
-            chapter_ix: None,
-            chapter_body: SharedString::default(),
-            chapter_blocks: Vec::new(),
+            tutorial_open,
+            chapters,
+            examples,
+            chapter_ix,
+            chapter_body,
+            chapter_blocks,
             scratch,
             show_scratch: false,
             log: vec![LogLine::info(status)],
@@ -2934,13 +2963,32 @@ impl SonicSpike {
             }
             col.into_any_element()
         } else {
-            div()
+            let mut empty = v_flex()
                 .flex_1()
+                .gap_2()
                 .p_2()
                 .text_sm()
                 .text_color(muted)
-                .child(self.i18n.tr("Pick a chapter — or load an example into the buffer.").to_string())
-                .into_any_element()
+                .child(self.i18n.tr("Pick a chapter — or load an example into the buffer.").to_string());
+            if !chapters.is_empty() {
+                empty = empty.child(
+                    Button::new("tut-start-here")
+                        .success()
+                        .label(format!("▶ {}", self.i18n.tr("Start here")))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(ch) = this.chapters.as_ref().and_then(|c| c.first()) {
+                                let raw = std::fs::read_to_string(&ch.path).unwrap_or_default();
+                                let dir = ch.path.parent().unwrap_or(Path::new("."));
+                                this.chapter_body =
+                                    tutorial::absolutize_image_paths(&raw, dir).into();
+                                this.chapter_blocks = tutorial::extract_code_blocks(&raw);
+                                this.chapter_ix = Some(0);
+                            }
+                            cx.notify();
+                        })),
+                );
+            }
+            empty.into_any_element()
         };
 
         h_flex().size_full().items_start().child(nav.h_full()).child(body).into_any_element()

@@ -8,6 +8,12 @@
 use std::path::{Path, PathBuf};
 
 pub fn default_store_dir() -> PathBuf {
+    // Escape hatch for smoke-testing things like first-run behaviour
+    // against a throwaway directory without touching the user's real
+    // workspace/prefs.
+    if let Some(dir) = std::env::var_os("SONIC_OXIDE_STORE_DIR") {
+        return PathBuf::from(dir);
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let dir = home.join(".sonic-pi/store/sonic-oxide");
     // One-time migration from the pre-naming "streamlined" dir.

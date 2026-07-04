@@ -33,6 +33,7 @@ minutes; after that it's seconds.
 | `SONIC_OXIDE_APP_ROOT` | where the Sonic Pi `app/` runtime lives (bundles set this) |
 | `SONIC_OXIDE_RUBY` | explicit ruby interpreter (else bundled, else system) |
 | `SONIC_OXIDE_LANG` | UI language (else the `lang` pref, else `LANG`; locales in `etc/i18n/`) |
+| `SONIC_OXIDE_STORE_DIR` | workspace/prefs dir (else `~/.sonic-pi/store/sonic-oxide`) — point at a throwaway dir to smoke-test first-run behaviour without touching real data |
 | `SONIC_OXIDE_DEBUG_CHILDREN=1` | inherit Spider/SuperSonic stdio (debugging) |
 | `SONIC_SPIKE_AUTOQUIT=<secs>` | quit via the clean-shutdown path (CI/smoke hook) |
 | `SONIC_OXIDE_BOOT_TIMEOUT_SECS` | engine-readiness wait (tests use stubs + 1s) |

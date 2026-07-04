@@ -64,6 +64,48 @@ prefs.conf like everything else, surfaced as a checkmark next to visited
 chapters in the nav list. No new infrastructure — `prefs` already round-trips
 arbitrary key/value pairs.
 
+## Status (2026-07-04)
+
+✅ **Implemented.** `tutorial::extract_code_blocks` (pure, unit-tested
+against every real chapter — 50+ chapters with fences all yield ≥1 block)
+feeds a "Try it" strip of "▶ Example N" buttons beneath the chapter
+markdown. Each click loads that block's text into a wholly separate
+`scratch: Entity<InputState>` field (never one of the user's 10 numbered
+buffers) and runs it through the existing, unmodified run pipeline — a
+`current_editor()`/`current_run_name()` pair now generalizes
+`run_active`/`comment_active`/`align_active` to operate on "whichever
+buffer is showing" (scratch or numbered), which also fixed a latent
+correctness gap: before this, Alt+/ and Align while viewing the scratch
+buffer would have silently edited the wrong (numbered) buffer.
+
+**Scope note vs. the original design sketch:** approach (a)'s "overlay a
+Run button positioned via `range_to_bounds`" turned out not to fit —
+`range_to_bounds` is an `InputState` (editor) API; the markdown `TextView`
+that renders chapters doesn't expose per-code-block rendered bounds. Shipped
+instead: a clean "Try it" strip listing every block in the chapter, below
+the markdown rather than overlaid inline on it. Functionally equivalent
+(every example gets a one-click Run), simpler, and needed no
+gpui-component patch.
+
+**First-run experience also done**: `first_run` is detected precisely
+(`!store_dir.join("prefs.conf").exists()`, checked before anything can
+create it) and eagerly loads + selects chapter 1 exactly as `Cmd::Tutorial`
+would. The tutorial pane's empty state (no chapter picked, but chapters
+exist) also grew a "▶ Start here" button. Verified end-to-end against a
+real boot: a new `SONIC_OXIDE_STORE_DIR` env override (documented in
+BUILD.md) points the whole workspace/prefs system at a throwaway directory
+so this could be smoke-tested with the REAL runtime without touching Tom's
+actual `~/.sonic-pi/store/sonic-oxide` — AUTOQUIT run PASSED (spider +
+engine alive, clean shutdown, buffers correctly written to the throwaway
+dir), proving the whole new code path (chapter load + extraction + first-
+chapter selection, all running during real app construction) executes
+without panicking.
+
+**Not done (optional, per the original plan):** progress tracking
+(checkmarks on visited chapters) — cheap or infra exists (prefs round-trip
+arbitrary keys already), just not built; low priority next to the
+higher-value phases.
+
 ## Work items
 
 1. `tutorial.rs`: a pure function extracting fenced code blocks + their
