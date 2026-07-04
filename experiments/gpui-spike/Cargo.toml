@@ -17,7 +17,9 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 # Tom's fork = upstream 1505b14 + the local-image-paths patch (markdown
 # images with scheme-less URLs load from disk — the tutorial's diagrams).
 # PR-able upstream; drop back to longbridge/gpui-component once merged.
-gpui-component = { git = "https://github.com/ThomasRedstone/gpui-component", rev = "45fdffb202cf3e1d90298490f0545844484a6e46" }
+# tree-sitter-ruby: the crate ships NO default features — without the
+# grammar, code_editor("ruby") silently renders plain text (no highlighting).
+gpui-component = { git = "https://github.com/ThomasRedstone/gpui-component", rev = "45fdffb202cf3e1d90298490f0545844484a6e46", features = ["tree-sitter-ruby"] }
 gpui-component-assets = { git = "https://github.com/ThomasRedstone/gpui-component", rev = "45fdffb202cf3e1d90298490f0545844484a6e46" }
 libc = "0.2"
 # Must match gpui-component's pin — the CompletionProvider trait speaks these types.
