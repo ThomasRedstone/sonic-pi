@@ -70,6 +70,52 @@ the underline.
    discipline applies: patch, use, PR back, drop the pin once merged).
 3. i18n + tests as usual for anything user-visible.
 
+## Audit results (2026-07-04)
+
+Did the audit-first pass the plan calls for, before writing anything new:
+
+- **Hover docs**: ✅ **built.** `gpui-component` ships a `HoverProvider`
+  trait mirroring `CompletionProvider` almost exactly (same shape as the
+  existing `SonicCompletions` adapter) — no upstream work needed, just a
+  second small adapter (`SonicHover`) over `Vocab`. Hovering a synth, fx,
+  sample, function, or opt name now shows the same markdown doc the Help
+  pane renders, reusing `VocabEntry::doc_markdown()` — no new formatting
+  logic. The word-detection half needed a genuinely new pure helper
+  (`vocab::word_at`) since completion's `word_prefix_at` only looks
+  backward from the caret (what's typed so far) where hover needs the
+  whole word under an arbitrary cursor position, forward and back — unit
+  tested, plus the whole lookup (`hover_markdown_for`) factored out
+  GPUI-free and unit tested directly (no `Window`/`App` needed).
+- **Keyboard fold toggle**: ❌ **confirmed upstream-blocked, not a flag.**
+  Unlike syntax highlighting and folding-the-feature (both were one config
+  flag away), the actual fold/unfold mutation
+  (`DisplayMap::toggle_fold(line)`) lives behind a `pub(super)` field —
+  invisible outside `gpui_component::input` itself. There is no public
+  method, action, or keybinding hook to reach it from application code.
+  Confirmed by grep, not assumption. A real fix needs an upstream PR
+  adding a public `InputState::toggle_fold_at_cursor()` or similar; not
+  attempted here (a mouse-click-simulation workaround would be fragile and
+  wasn't worth the risk for a "nice to have").
+- **Multi-caret**: ❌ **confirmed absent, not hidden.** No trace of
+  multi-cursor/add-cursor/select-next-occurrence anywhere in the crate.
+  Not a quick win under any framing — would be substantial upstream work
+  neither this session nor a patch-and-use-locally approach is well suited
+  to. Left for whoever eventually drives the `gpui-component` fork harder
+  (see also: PR-ing the tutorial-images `local-image-paths` patch, still
+  pending).
+- **Inline diagnostic reveal-on-hover**: 🔶 **viable path found, deferred.**
+  Diagnostics (the red-underline `Diagnostic` type) don't automatically
+  feed the hover popover — but `SonicHover` already has everything needed
+  to ALSO check for a diagnostic at the hovered offset and show its
+  message. The catch: `HoverProvider::hover` gets `(text, offset)`, not a
+  reference to the specific `InputState` instance's live diagnostic set —
+  reaching it would mean mirroring diagnostic state into a second,
+  `Rc<RefCell<…>>`-shared place SonicHover can see, kept in sync with
+  every place that pushes/clears diagnostics (`run_active`'s clear, the
+  tick loop's push on error). Real, buildable, but real added state and a
+  real drift risk — scoped as its own follow-up rather than rushed in
+  alongside the vocab-hover work.
+
 ## Exit criteria
 
 No fixed checklist — each candidate ships independently when ready. Track

@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use vocab::{word_prefix_at, Vocab, VocabKind};
+use vocab::{word_at, word_prefix_at, Vocab, VocabKind};
 
 // Live-coding keyboard shortcuts (bound in `main`, handled on the root view).
 actions!(sonic_spike, [RunBuffer, StopAll, CommentToggle, AlignBuffer, NextBuffer, PrevBuffer, ZoomIn, ZoomOut, ZoomReset, OpenFile, SaveFile, SaveFileAs]);
@@ -547,6 +547,37 @@ mod tests {
     }
 
     #[test]
+    fn hover_finds_vocab_entries_and_opts_but_not_unknown_words() {
+        use super::{hover_markdown_for, Vocab, VocabKind};
+        use crate::vocab::VocabEntry;
+
+        let mut tb303 = VocabEntry::new(":tb303", VocabKind::Synth, "acid bass");
+        tb303.opt_docs = vec![crate::vocab::OptDoc {
+            name: "cutoff:".into(),
+            default: "100".into(),
+            ..Default::default()
+        }];
+        let vocab = Vocab { entries: vec![tb303] };
+
+        // Hovering the symbol itself: full doc_markdown.
+        let text = "use_synth :tb303\nplay 60, cutoff: 80";
+        let doc = hover_markdown_for(&vocab, text, 12).expect("hover over :tb303");
+        assert!(doc.contains(":tb303"));
+        assert!(doc.contains("acid bass"));
+
+        // Hovering the opt name on a later line: falls back to the
+        // context-narrowed opt lookup (same mechanism as completion).
+        let doc = hover_markdown_for(&vocab, text, 27).expect("hover over cutoff");
+        assert!(doc.contains("cutoff:"));
+        assert!(doc.contains("100"));
+
+        // A word that's neither a vocab entry nor a known opt: no hover.
+        assert!(hover_markdown_for(&vocab, "play 60", 1).is_none());
+        // Cursor on whitespace: no hover either.
+        assert!(hover_markdown_for(&vocab, "play  60", 5).is_none());
+    }
+
+    #[test]
     fn save_name_prefers_the_known_filename() {
         use super::suggested_save_name;
         use std::path::Path;
@@ -668,6 +699,52 @@ impl gpui_component::input::CompletionProvider for SonicCompletions {
             .last()
             .map(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
             .unwrap_or(false)
+    }
+}
+
+/// Hover docs (plan `08-editor-power.md`): reuse the same vocabulary and
+/// markdown detail view the Help pane already renders — hovering a synth,
+/// fx, sample, function, or opt name shows its doc without leaving the
+/// buffer. `gpui-component` ships a `HoverProvider` trait mirroring
+/// `CompletionProvider`, so this needed no upstream work, just a second
+/// small adapter over `Vocab`.
+/// The markdown doc for whatever word sits at `offset` in `text`, or `None`
+/// off any known word — the pure lookup behind `SonicHover`, kept
+/// GPUI-free so it's directly unit-testable.
+fn hover_markdown_for(vocab: &Vocab, text: &str, offset: usize) -> Option<String> {
+    let (range, word) = word_at(text, offset)?;
+    vocab.get(word).map(|e| e.doc_markdown()).or_else(|| {
+        // Bare opt names (`cutoff:`) aren't global vocab entries — only
+        // resolvable via the nearest synth/fx symbol, same as opt
+        // completion. `word_at` never includes the trailing `:`, so
+        // compare colon-trimmed.
+        vocab
+            .opt_completions(&text[..range.start], word, 50)
+            .into_iter()
+            .find(|(name, _)| name.trim_end_matches(':') == word)
+            .map(|(name, default)| format!("**`{name}`** — default `{default}`"))
+    })
+}
+
+struct SonicHover(Rc<Vocab>);
+
+impl gpui_component::input::HoverProvider for SonicHover {
+    fn hover(
+        &self,
+        text: &gpui_component::input::Rope,
+        offset: usize,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Task<gpui::Result<Option<lsp_types::Hover>>> {
+        let text = text.to_string();
+        let hover = hover_markdown_for(&self.0, &text, offset).map(|doc| lsp_types::Hover {
+            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: doc,
+            }),
+            range: None,
+        });
+        Task::ready(Ok(hover))
     }
 }
 
@@ -1875,6 +1952,7 @@ impl SonicSpike {
                         .default_value(initial);
                     state.lsp.completion_provider =
                         Some(Rc::new(SonicCompletions(vocab.clone())));
+                    state.lsp.hover_provider = Some(Rc::new(SonicHover(vocab.clone())));
                     state
                 })
             })
@@ -1889,7 +1967,8 @@ impl SonicSpike {
                     .code_editor("ruby")
                     .line_number(true)
                     .soft_wrap(false);
-                state.lsp.completion_provider = Some(Rc::new(SonicCompletions(vocab)));
+                state.lsp.completion_provider = Some(Rc::new(SonicCompletions(vocab.clone())));
+                state.lsp.hover_provider = Some(Rc::new(SonicHover(vocab)));
                 state
             })
         };

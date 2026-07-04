@@ -538,6 +538,41 @@ pub fn word_prefix_at(text: &str, offset: usize) -> (usize, &str) {
     (start, &text[start..offset])
 }
 
+/// The full word (both directions) surrounding byte `offset` — for hover,
+/// unlike `word_prefix_at`'s completion-flavoured "only what's typed so
+/// far". Same character class as completion (identifier chars + one
+/// leading `:` for symbols). Returns the word's byte range and text, or
+/// `None` when `offset` sits on a non-word character.
+pub fn word_at(text: &str, offset: usize) -> Option<(std::ops::Range<usize>, &str)> {
+    let offset = {
+        let mut o = offset.min(text.len());
+        while o > 0 && !text.is_char_boundary(o) {
+            o -= 1;
+        }
+        o
+    };
+    let bytes = text.as_bytes();
+    let is_word = |i: usize| -> bool {
+        (bytes[i] as char).is_ascii_alphanumeric() || bytes[i] as char == '_'
+    };
+    let mut start = offset;
+    while start > 0 && is_word(start - 1) {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < bytes.len() && is_word(end) {
+        end += 1;
+    }
+    if start == end {
+        return None; // offset sits on punctuation/whitespace
+    }
+    if start > 0 && bytes[start - 1] as char == ':' && !(start > 1 && bytes[start - 2] as char == ':')
+    {
+        start -= 1;
+    }
+    Some((start..end, &text[start..end]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,5 +787,25 @@ and more.",
         assert_eq!(word_prefix_at("play 60", 4), (0, "play"));
         assert_eq!(word_prefix_at("x = A::B", 8), (7, "B"));
         assert_eq!(word_prefix_at("", 0), (0, ""));
+    }
+
+    #[test]
+    fn word_at_finds_the_whole_word_around_the_cursor() {
+        // Cursor in the MIDDLE of a symbol (hover, not completion) still
+        // finds the whole word, including the text after the cursor.
+        let (range, word) = word_at("use_synth :tb303", 13).unwrap();
+        assert_eq!(word, ":tb303");
+        assert_eq!(&"use_synth :tb303"[range], ":tb303");
+
+        let (_, word) = word_at("play 60", 1).unwrap();
+        assert_eq!(word, "play");
+
+        // Scope operator: same "not ::" exclusion as word_prefix_at.
+        let (_, word) = word_at("x = A::B", 7).unwrap();
+        assert_eq!(word, "B");
+
+        // Cursor surrounded by whitespace on both sides: no word.
+        assert!(word_at("play  60", 5).is_none());
+        assert!(word_at("", 0).is_none());
     }
 }
