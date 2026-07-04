@@ -7,6 +7,7 @@
 #   make package   self-contained bundle + AppDir + AppImage, all smoke-tested
 #   make e2e       full-runtime checks against the real engine
 #   make latency   boot/run/scope/cue latency baseline vs ceilings
+#   make soak      long-running stability check (60s default; SONIC_OXIDE_SOAK_SECS=N to extend)
 #   make install-launcher   desktop menu entry (runs the release binary)
 #   make qt        one-time Qt oracle build (auto-generates ruby_help.h)
 #
@@ -20,7 +21,7 @@ REPO  := $(abspath $(ROOT)/..)
 APT_DEPS := libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libasound2-dev libjack-jackd2-dev
 
-.PHONY: deps run run-debug test coverage package e2e latency install-launcher qt clean
+.PHONY: deps run run-debug test coverage package e2e latency soak install-launcher qt clean
 
 deps:
 	@missing=""; \
@@ -64,6 +65,13 @@ e2e:
 # Release build — measure what ships.
 latency:
 	cd $(ROOT)/rust-core && cargo run --release --example latency_probe
+
+# Stability soak (plan 04-gig-hardening.md): 60s by default, override with
+# SONIC_OXIDE_SOAK_SECS=3600 (1h) or 86400 (24h) for a real pre-stage check.
+# Not run in CI — needs the real SuperSonic binary + Ruby, which CI doesn't
+# build (see sonic-oxide.yml's e2e-scope comments).
+soak:
+	cd $(ROOT)/rust-core && cargo run --release --example soak
 
 # Desktop launcher: menu entry + icon + wrapper that runs the built release
 # binary (building it first if missing). Idempotent.

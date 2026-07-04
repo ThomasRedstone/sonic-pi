@@ -135,9 +135,38 @@ the killed children itself to accurately stand in for init's reaping. If
 whether the checking process is actually the parent before suspecting the
 PID-reuse guard.
 
-**Not yet done:** OSC fuzzing and the soak test (see the Work Items above);
-the one-time real "kill -9 my actual running GUI, confirm sound never
-stopped" hands-on check is still Tom's to do, not automatable.
+✅ **Fuzz-lite harness landed** (`tests/fuzz_lite.rs`, runs in every normal
+`cargo test`, zero new dependencies, stable Rust): known-tricky byte
+patterns, 20k deterministic random-byte trials, and mutation-of-real-
+messages all pushed through `decode_udp` → `parse_incoming` — no panics
+found. NOTE: a real corpus-guided `cargo fuzz` setup (libFuzzer, coverage-
+guided) remains a nice-to-have upgrade — this machine has no `clang`
+installed, which `cargo-fuzz` needs; the fuzz-lite harness is the actual
+shipped, CI-enforced floor in the meantime and already covers the stated
+goal (the parser must never panic on malformed input).
+
+✅ **Soak harness landed** (`examples/soak.rs`, `make soak`): boots the real
+runtime, runs a live_loop, samples child liveness + scope liveness + RSS
+memory on an interval, fails on any child death, on the scope never
+publishing, or on >2x memory growth between the first post-warmup sample
+and the last. A 60s local run (default) PASSED cleanly: stable RSS
+(spider ~57MB flat, engine ~47MB flat), scope confirmed live after
+warmup. Deliberately NOT wired into CI (needs the real SuperSonic binary
++ Ruby, which CI doesn't build — matches every other real-runtime e2e
+example). The real multi-hour pre-stage run
+(`SONIC_OXIDE_SOAK_SECS=86400 make soak`, or just set the env var) is
+still Tom's to do on real hardware before trusting gig mode on a stage.
+
+**Not yet done:** the one-time real "kill -9 my actual running GUI, confirm
+sound never stopped" hands-on check — the e2e example proves the mechanism
+against a throwaway session; only Tom pulling the trigger on his own
+running instance closes the loop for real.
+
+**Phase 6 status: substantially complete.** All Work Items from the
+original plan are implemented and machine-verified (unit tests, an e2e
+example against the real runtime, and the fuzz/soak harnesses). What
+remains is entirely hands-on-hardware verification that no amount of
+automation can substitute for.
 
 ## Exit criteria
 

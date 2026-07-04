@@ -285,6 +285,14 @@ impl Supervisor {
         self.mode
     }
 
+    pub fn spider_pid(&self) -> u32 {
+        self.spider.id()
+    }
+
+    pub fn supersonic_pid(&self) -> u32 {
+        self.supersonic.id()
+    }
+
     /// Write a gig-mode session lock recording both children's PIDs + start
     /// times (the PID-reuse guard) and the port table — what a relaunched
     /// GUI needs to reattach without respawning anything. Only meaningful
