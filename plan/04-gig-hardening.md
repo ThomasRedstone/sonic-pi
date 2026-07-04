@@ -105,6 +105,40 @@ otherwise forgoes.
    never stopped and the relaunched GUI shows the right buffer" manual test —
    no amount of unit testing substitutes for that one.
 
+## Status (2026-07-04)
+
+✅ **Implemented and e2e-verified against the real runtime.**
+`sonicpi-core::session_lock` (`SessionLock`, fail-closed `still_live()` via
+`/proc/<pid>/stat` start-time comparison), `Supervisor::boot`'s `BootMode`
+param (`Gig` skips `PR_SET_PDEATHSIG` and Drop-triggered shutdown),
+`SONIC_OXIDE_GIG=1` boots detached, a relaunch auto-reattaches (no flag
+needed for that half), and "⏏ Stop Performance" in the header ends a gig
+session explicitly (PID-based kill for reattached sessions, since the app
+never held `Child` handles for those). Panic-safe autosave snapshot lands
+alongside it. `examples/gig_reattach_check.rs` (`make e2e`) proves the
+whole story end-to-end: boot gig → simulate a crash (drop the Supervisor
+without shutdown) → children survive → reattach from the lock file alone →
+ping/run through the reattached session → explicit stop → lock correctly
+reads as dead. PASS on first real run after one fix (see gotcha below).
+
+**Gotcha (matters for future debugging, not a bug in shipped code):** a
+killed process stays a zombie — visible in `/proc`, same recorded start
+time — until its PARENT calls `wait()`/`waitpid()` on it. In a real
+crash+relaunch, the dead GUI's children get reparented to init, which reaps
+them promptly, so a genuinely different relaunched process is never in a
+position to need to (and must not try to — `waitpid` on a PID that isn't
+your child fails with ECHILD). The e2e test, however, simulates the crash
+by dropping the `Supervisor` value WITHIN THE SAME OS PROCESS — so that
+process remains the real parent throughout and must explicitly `waitpid`
+the killed children itself to accurately stand in for init's reaping. If
+`still_live()` ever seems to report a stale "yes" in ad-hoc testing, check
+whether the checking process is actually the parent before suspecting the
+PID-reuse guard.
+
+**Not yet done:** OSC fuzzing and the soak test (see the Work Items above);
+the one-time real "kill -9 my actual running GUI, confirm sound never
+stopped" hands-on check is still Tom's to do, not automatable.
+
 ## Exit criteria
 
 - `kill -9` on the GUI process while a `live_loop` plays: sound continues

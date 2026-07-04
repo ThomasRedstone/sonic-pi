@@ -57,6 +57,7 @@ e2e:
 	cd $(ROOT)/rust-core && cargo run --example supervisor_check
 	cd $(ROOT)/rust-core && cargo run --example record_check
 	cd $(ROOT)/rust-core && cargo run --example conformance_check
+	cd $(ROOT)/rust-core && cargo run --example gig_reattach_check
 
 # Latency baseline (foundation harness): prints the numbers that define the
 # "live" feel and fails past its ceilings — ratchet them down over time.
