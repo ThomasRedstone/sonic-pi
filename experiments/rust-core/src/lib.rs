@@ -28,6 +28,8 @@ pub mod process;
 pub mod protocol;
 pub mod session_lock;
 pub mod supervisor;
+#[cfg(target_os = "macos")]
+pub mod watchdog;
 
 mod session;
 

@@ -58,6 +58,40 @@ matter with a real GUI running.
    needs hands-on time on real machines once they're available. Treat CI
    green as "the core is portable," not "the app works."
 
+### Status (2026-07-04)
+
+✅ **Windows Job Objects: implemented.** `WinJob` (`supervisor.rs`) creates
+a kill-on-close Job Object and assigns both children to it in
+`BootMode::Normal`; `BootMode::Gig` skips it entirely (symmetric with
+Unix's PDEATHSIG skip). Written and cross-compiled blind (no Windows
+machine here) — `cargo check`/`cargo test --lib --no-run` against
+`x86_64-pc-windows-msvc` both fully type-check and generate code; only the
+final MSVC link step is unavailable locally (same situation the shm
+backend was in, which then passed real CI on the first try). A real
+behavioral test (`win_job_kills_its_child_when_the_job_handle_closes`,
+gated `#[cfg(windows)]`, lives in `supervisor.rs`'s own test module so it
+runs automatically under CI's existing `cargo test --lib` on
+`windows-latest` — no new CI job needed) spawns a real long-running child,
+assigns it to a fresh job, and confirms dropping the job handle kills it
+within 5s. Result of the real CI run: see `03-status.md`.
+
+✅ **macOS watchdog PRIMITIVE: implemented + real-CI-verifiable.** The
+one piece with zero precedent in the codebase — `kqueue`/`EVFILT_PROC`/
+`NOTE_EXIT` process-exit watching — now lives in
+`rust-core/src/watchdog.rs` (`wait_for_process_exit`), with three tests
+that spawn REAL child processes and assert the primitive correctly
+detects exit-while-waiting, times out on a still-running process, and
+resolves instantly for an already-dead PID. These run for real on
+`macos-latest` CI (`cargo test --lib` picks them up automatically, same
+mechanism as Windows). **Deliberately NOT wired into `Supervisor::boot`
+yet** — turning the primitive into an actual watchdog needs it to run as
+a genuinely separate OS process (so it outlives the app if the app is
+what died), which needs a way to locate that process's own executable at
+runtime (a `paths.rs`-shaped problem) and doesn't make sense to design
+before the macOS packaging story exists. Landing the verified primitive
+now means that follow-up is "wire up a known-working piece," not "invent
+and verify a new OS mechanism blind."
+
 ### Work items (ordered by dependency)
 
 1. Windows Job Objects for crash-safety (self-contained, testable on a
