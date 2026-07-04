@@ -581,6 +581,39 @@ mirrored state to reach them from the provider trait — scoped as a
 deferred follow-up, not attempted this pass. See `08-editor-power.md` for
 the full audit writeup.
 
+## ◕ PHASE 9 (platforms & release) — both crash-safety primitives landed (2026-07-04)
+
+The hardware-independent half of phase 9's Part A is done: **Windows Job
+Objects** (`WinJob` in `supervisor.rs`, kill-on-close, assigned to both
+children in `BootMode::Normal`, skipped in `Gig` — symmetric with the Unix
+PDEATHSIG skip) and the **macOS kqueue watchdog primitive**
+(`watchdog::wait_for_process_exit`, `EVFILT_PROC`/`NOTE_EXIT`). Both were
+written and cross-compiled blind (no Windows/Mac hardware here) using the
+same method that worked for the shm backend: `cargo check`/
+`cargo test --lib --no-run` against the real target fully type-checks and
+generates code, only the final native link is unavailable locally. Real
+tests exist for both — spawn a real child, exercise the real OS mechanism,
+assert the outcome — gated to run automatically under CI's existing
+`cargo test --lib` on `windows-latest`/`macos-latest` (no new CI jobs
+needed). **Result of the actual CI run**: pending at time of writing — a
+monitor is watching; update this line once it lands, don't assume PASS
+just because the local cross-compile succeeded (that was true of the shm
+backend too, but "compiles" and "correct OS-level behavior" are different
+claims).
+
+The macOS primitive is deliberately NOT yet wired into a real watchdog
+process — that needs a way to locate a separate watchdog executable at
+runtime (a `paths.rs`-shaped problem) and doesn't make sense to design
+ahead of a macOS packaging story that doesn't exist yet. Landing the
+verified primitive now converts that future work from "invent and verify a
+new OS mechanism blind" into "wire up a known-working piece."
+
+**Still blocked on hardware**: real GUI/audio smoke-testing on both
+platforms, actual packaging scripts, and the mac `.app`/win installer
+work. **Not mine to decide**: the "going public" question (phase 9 Part B)
+— revisit per the original plan's recommendation, after a real Tier-1
+rehearsal and some gig-hardening mileage.
+
 ## Post-parity phases (2026-07-04)
 
 Loop/product parity (Tiers 1-2) and the foundation workstream (harness,

@@ -163,7 +163,7 @@ map.
 | **6** | ✅ Gig-hardening — the runtime survives a GUI crash/relaunch; fuzzed OSC parsing; soak-tested | The one thing Qt never had; the most differentiated thing Oxide can be | [`04-gig-hardening.md`](./04-gig-hardening.md) |
 | **7** | ✅ Teaching mode — runnable code blocks in the tutorial, first-run flow | Sonic Pi's identity is learn-by-sound; the tutorial renders but doesn't teach yet | [`05-teaching-mode.md`](./05-teaching-mode.md) |
 | **8** | Performance UI — full-screen mode, projector-scale type, MIDI-controller-mappable actions | Only worth building once daily use says what's actually reached for | [`06-performance-ui.md`](./06-performance-ui.md) |
-| **9** | Platforms & release — mac/win apps, README + versioned releases, the "go public?" decision | Hardware-gated for the app half; the release half is a product decision | [`07-platforms-release.md`](./07-platforms-release.md) |
+| **9** | ◕ Platforms & release — BOTH crash-safety primitives done (Windows Job Objects, macOS kqueue watchdog); full apps still hardware-gated; the "go public?" decision is Tom's | Hardware-gated for the app half; the release half is a product decision | [`07-platforms-release.md`](./07-platforms-release.md) |
 | **10** | ◕ Editor power — hover docs done; multi-caret/fold-toggle confirmed upstream-blocked; diagnostic-hover deferred | Steady accumulation; mostly upstream-adjacent, low risk | [`08-editor-power.md`](./08-editor-power.md) |
 
 **Recommended order:** 6 → 7, run in parallel with the daily-use clock; 9's
