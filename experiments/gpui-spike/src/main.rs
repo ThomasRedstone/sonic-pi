@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vocab::{word_prefix_at, Vocab, VocabKind};
 
@@ -48,11 +48,15 @@ enum Cmd {
     Tutorial,
     Nodes,
     Debug,
+    /// The explicit, destructive "end the gig" action (only offered when
+    /// the backend is a gig session) — see `Backend::stop_performance`.
+    StopPerformance,
 }
 
 use gpui::*;
+use gpui::prelude::FluentBuilder as _;
 use gpui_component::{
-    ActiveTheme, Root, Sizable as _,
+    ActiveTheme, Root, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{DockArea, DockItem, Panel, PanelEvent},
     h_flex,
@@ -73,7 +77,8 @@ use sonicpi_core::paths::{resolve, SonicPiPath};
 use sonicpi_core::ports::PortId;
 use sonicpi_core::process::Daemon;
 use sonicpi_core::rosc::{OscMessage, OscType};
-use sonicpi_core::supervisor::Supervisor;
+use sonicpi_core::session_lock::{self, SessionLock};
+use sonicpi_core::supervisor::{BootMode, Supervisor};
 use sonicpi_core::{
     protocol, ApiClient, AudioDevicesInfo, AudioDriversInfo, AudioInputDevicesInfo, ClientEvent,
     Session, StatusType,
@@ -515,6 +520,33 @@ mod tests {
     }
 
     #[test]
+    fn panic_snapshot_flush_writes_the_recorded_buffers() {
+        use super::flush_panic_snapshot;
+        let dir = std::env::temp_dir().join("sonic_oxide_panic_snapshot_flush_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let snapshot = (dir.clone(), vec!["play 60".to_string(), String::new()]);
+        assert_eq!(flush_panic_snapshot(&snapshot), 2);
+        assert_eq!(
+            crate::store::load_buffers(&dir, 2)[0].as_deref(),
+            Some("play 60"),
+            "the hook's write must actually land on disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn panic_snapshot_holds_the_latest_write() {
+        use super::panic_snapshot;
+        // process-global static — only assert monotonic "last write wins"
+        // rather than a specific initial state (other tests may touch it).
+        let dir = std::env::temp_dir().join("sonic_oxide_panic_snapshot_state_test");
+        *panic_snapshot().lock().unwrap() = Some((dir.clone(), vec!["a".to_string()]));
+        let got = panic_snapshot().lock().unwrap().clone().unwrap();
+        assert_eq!(got.0, dir);
+        assert_eq!(got.1, vec!["a".to_string()]);
+    }
+
+    #[test]
     fn save_name_prefers_the_known_filename() {
         use super::suggested_save_name;
         use std::path::Path;
@@ -650,11 +682,17 @@ impl ApiClient for LogSink {
     }
 }
 
-/// How the real runtime was booted: the classic Ruby daemon (4 processes) or
-/// the Phase-4 Rust supervisor (3 — the app owns Spider + SuperSonic).
+/// How the real runtime was booted: the classic Ruby daemon (4 processes),
+/// the Phase-4 Rust supervisor (3 — the app owns Spider + SuperSonic), or
+/// (gig-hardening, `plan/04-gig-hardening.md`) a gig session this process
+/// never spawned — reattached to via a `SessionLock` after a previous GUI
+/// process exited or crashed while `SONIC_OXIDE_GIG=1` kept it alive.
 enum Runtime {
     DaemonRb(Daemon),
     Rust(Supervisor),
+    /// No `Child` handles (we didn't spawn these) — only their PIDs, for the
+    /// explicit "Stop performance" action to terminate by PID directly.
+    Reattached { spider_pid: u32, supersonic_pid: u32 },
 }
 
 // ── Backend: real daemon session, or in-process loopback ────────────────────
@@ -667,6 +705,11 @@ enum Backend {
         runtime: Runtime,
         /// SuperSonic's UDP port — names its shm segment (`/SuperSonic_<port>`).
         scsynth_port: u16,
+        /// Set exactly when this session is a gig session (freshly booted
+        /// with `SONIC_OXIDE_GIG=1`, or reattached to one) — gates whether
+        /// normal app-quit tears the runtime down (it must NOT, for gig
+        /// sessions) and whether "Stop performance" is offered.
+        gig_lock_path: Option<PathBuf>,
     },
     /// Dev fallback: an in-process "spider" echoes engine messages so the whole
     /// OSC path runs without a built SuperSonic.
@@ -679,17 +722,46 @@ enum Backend {
 }
 
 impl Backend {
-    /// Boot chain: the Phase-4 Rust supervisor by DEFAULT (3 processes, app
-    /// owns the children; all daemon features ported — 4560 cues, TOML
-    /// audio opts, direct device switching), falling back to daemon.rb,
-    /// then loopback. `SONIC_OXIDE_DAEMON=1` forces the daemon.rb path
-    /// (the A/B oracle).
+    /// Boot chain: reattach to a still-running GIG session first (never
+    /// spawns anything — see `plan/04-gig-hardening.md`), else the Phase-4
+    /// Rust supervisor by DEFAULT (3 processes, app owns the children; all
+    /// daemon features ported — 4560 cues, TOML audio opts, direct device
+    /// switching), falling back to daemon.rb, then loopback.
+    /// `SONIC_OXIDE_DAEMON=1` forces the daemon.rb path (the A/B oracle);
+    /// `SONIC_OXIDE_GIG=1` makes a FRESH supervisor boot detach from this
+    /// process's lifetime instead of dying with it.
     fn connect(sink: Arc<Mutex<Vec<ClientEvent>>>) -> (Backend, String) {
         let force_daemon = std::env::var("SONIC_OXIDE_DAEMON").as_deref() == Ok("1");
+        let gig = std::env::var("SONIC_OXIDE_GIG").as_deref() == Ok("1");
+        let lock_path = session_lock::lock_path(&store::default_store_dir());
+
         if !force_daemon {
-            match Self::try_supervisor(sink.clone()) {
+            if let Some(lock) = SessionLock::load(&lock_path) {
+                if lock.still_live() {
+                    match Self::try_reattach(&lock, sink.clone(), lock_path.clone()) {
+                        Ok(b) => {
+                            return (
+                                b,
+                                "=> Reattached to a running gig session — nothing new was spawned.".into(),
+                            )
+                        }
+                        Err(why) => eprintln!(
+                            "sonic-oxide: reattach probe failed ({why}); falling back to a fresh boot"
+                        ),
+                    }
+                } else {
+                    eprintln!("sonic-oxide: stale gig session lock found (processes gone); removing");
+                    SessionLock::remove(&lock_path);
+                }
+            }
+            match Self::try_supervisor(sink.clone(), gig, &lock_path) {
                 Ok(b) => {
-                    return (b, "=> Booted via Rust supervisor (3 processes, no daemon.rb).".into())
+                    let msg = if gig {
+                        "=> Booted via Rust supervisor in GIG MODE — this session survives the app closing."
+                    } else {
+                        "=> Booted via Rust supervisor (3 processes, no daemon.rb)."
+                    };
+                    return (b, msg.into());
                 }
                 Err(why) => {
                     eprintln!("sonic-oxide: supervisor boot failed ({why}); trying daemon.rb");
@@ -705,13 +777,74 @@ impl Backend {
         }
     }
 
-    fn try_supervisor(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
+    fn try_supervisor(
+        sink: Arc<Mutex<Vec<ClientEvent>>>,
+        gig: bool,
+        lock_path: &Path,
+    ) -> Result<Backend, String> {
         let root = app_root();
-        let sup = Supervisor::boot(&root).map_err(|e| e.to_string())?;
+        let mode = if gig { BootMode::Gig } else { BootMode::Normal };
+        let sup = Supervisor::boot(&root, mode).map_err(|e| e.to_string())?;
+        if gig {
+            if let Err(e) = sup.write_session_lock(lock_path) {
+                eprintln!(
+                    "sonic-oxide: failed to write the gig session lock ({e}) — reattach won't find this session"
+                );
+            }
+        }
         let session =
             Session::connect(&sup.ports, Arc::new(LogSink(sink))).map_err(|e| e.to_string())?;
         let scsynth_port = sup.ports.get(PortId::Scsynth);
-        Ok(Backend::Real { session, runtime: Runtime::Rust(sup), scsynth_port })
+        Ok(Backend::Real {
+            session,
+            runtime: Runtime::Rust(sup),
+            scsynth_port,
+            gig_lock_path: gig.then(|| lock_path.to_path_buf()),
+        })
+    }
+
+    /// Reattach to a gig session this process didn't spawn. UDP is
+    /// connectionless — `Session::connect` succeeding proves nothing about
+    /// whether anyone's listening — so this actively pings and waits for
+    /// ANY reply before trusting the reattach; a timeout means the lock was
+    /// live-looking but the session isn't actually answering, and the
+    /// caller falls back to a fresh boot.
+    fn try_reattach(
+        lock: &SessionLock,
+        sink: Arc<Mutex<Vec<ClientEvent>>>,
+        lock_path: PathBuf,
+    ) -> Result<Backend, String> {
+        let ports = lock.to_ports();
+        let session = Session::connect(&ports, Arc::new(LogSink(sink.clone())))
+            .map_err(|e| e.to_string())?;
+        session.ping().map_err(|e| e.to_string())?;
+        if !Self::wait_for_any_event(&sink, Duration::from_millis(1500)) {
+            return Err("no reply from the running session (ping timed out)".into());
+        }
+        let scsynth_port = ports.get(PortId::Scsynth);
+        Ok(Backend::Real {
+            session,
+            runtime: Runtime::Reattached {
+                spider_pid: lock.spider_pid,
+                supersonic_pid: lock.supersonic_pid,
+            },
+            scsynth_port,
+            gig_lock_path: Some(lock_path),
+        })
+    }
+
+    /// Poll `sink` (the shared incoming-event buffer) for anything arriving
+    /// within `timeout` — used only during the synchronous reattach probe,
+    /// before the app's normal 30fps drain loop exists to consume it.
+    fn wait_for_any_event(sink: &Arc<Mutex<Vec<ClientEvent>>>, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if !sink.lock().unwrap().is_empty() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     fn try_real(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Result<Backend, String> {
@@ -738,7 +871,12 @@ impl Backend {
         let session = Session::connect(&daemon.ports, Arc::new(LogSink(sink)))
             .map_err(|e| e.to_string())?;
         let scsynth_port = daemon.ports.get(PortId::Scsynth);
-        Ok(Backend::Real { session, runtime: Runtime::DaemonRb(daemon), scsynth_port })
+        Ok(Backend::Real {
+            session,
+            runtime: Runtime::DaemonRb(daemon),
+            scsynth_port,
+            gig_lock_path: None,
+        })
     }
 
     fn loopback(sink: Arc<Mutex<Vec<ClientEvent>>>) -> Backend {
@@ -845,7 +983,11 @@ impl Backend {
             let (out, inp) = (output.unwrap_or(""), input.unwrap_or(""));
             let _ = match runtime {
                 Runtime::DaemonRb(_) => session.switch_audio_device(out, 0.0, 0, inp),
-                Runtime::Rust(_) => session.switch_audio_device_direct(out, 0.0, 0, inp),
+                // Reattached is a client of a supervisor-booted (no daemon)
+                // engine exactly like Rust — same direct path.
+                Runtime::Rust(_) | Runtime::Reattached { .. } => {
+                    session.switch_audio_device_direct(out, 0.0, 0, inp)
+                }
             };
         }
     }
@@ -919,7 +1061,9 @@ impl Backend {
         if let Backend::Real { session, runtime, .. } = self {
             let _ = match runtime {
                 Runtime::DaemonRb(_) => session.switch_audio_driver(driver),
-                Runtime::Rust(_) => session.switch_audio_driver_direct(driver),
+                Runtime::Rust(_) | Runtime::Reattached { .. } => {
+                    session.switch_audio_driver_direct(driver)
+                }
             };
         }
     }
@@ -958,6 +1102,14 @@ impl Backend {
         }
     }
 
+    /// Normal app-quit path: tears down what THIS process owns. Gig
+    /// sessions are deliberately left running — that's the entire point of
+    /// gig mode (`plan/04-gig-hardening.md`) — whether the runtime here is
+    /// one this process spawned (`Runtime::Rust` in `BootMode::Gig`) or one
+    /// it merely reattached to (`Runtime::Reattached`, which this process
+    /// never owned in the first place and so could not tear down even if it
+    /// wanted to). Use `stop_performance` for the explicit, destructive
+    /// "end the gig" action instead.
     fn shutdown(&mut self) {
         if let Backend::Real { session, runtime, .. } = self {
             match runtime {
@@ -969,6 +1121,11 @@ impl Backend {
                         eprintln!("sonic-oxide: daemon didn't exit in 3s; killing");
                         daemon.kill();
                     }
+                }
+                Runtime::Rust(sup) if sup.mode() == BootMode::Gig => {
+                    eprintln!(
+                        "sonic-oxide: gig mode — leaving the session running (use Stop Performance to end it)"
+                    );
                 }
                 Runtime::Rust(sup) => {
                     // Pre-shutdown liveness lets smoke tests assert the full
@@ -984,8 +1141,56 @@ impl Backend {
                         eprintln!("sonic-oxide: WARNING — a supervisor child survived shutdown");
                     }
                 }
+                Runtime::Reattached { .. } => {
+                    eprintln!(
+                        "sonic-oxide: reattached session — leaving it running (use Stop Performance to end it)"
+                    );
+                }
             }
         }
+    }
+
+    /// True iff this backend is a gig session (freshly booted with
+    /// `SONIC_OXIDE_GIG=1`, or reattached to one) — gates whether "Stop
+    /// Performance" is offered at all.
+    fn is_gig(&self) -> bool {
+        matches!(self, Backend::Real { gig_lock_path: Some(_), .. })
+    }
+
+    /// The explicit, destructive "end the gig" action: unlike normal
+    /// app-quit (which leaves a gig session running by design), this
+    /// actually terminates the runtime and removes the reattach lock so a
+    /// later launch boots fresh instead of trying to reattach to a session
+    /// that no longer exists. No-op outside gig mode.
+    fn stop_performance(&mut self) -> bool {
+        let Backend::Real { runtime, gig_lock_path: Some(lock_path), .. } = self else {
+            return false;
+        };
+        match runtime {
+            Runtime::Rust(sup) => {
+                let _ = sup.shutdown_verified();
+            }
+            Runtime::Reattached { spider_pid, supersonic_pid } => {
+                // We never held Child handles for these — the only way to
+                // stop them is by PID, same as the manual cleanup in the
+                // gig-mode integration tests. TERM first, brief grace
+                // period, then KILL anything still standing.
+                for pid in [*spider_pid, *supersonic_pid] {
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(500));
+                for pid in [*spider_pid, *supersonic_pid] {
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+            }
+            Runtime::DaemonRb(_) => {} // gig mode never produces this combination
+        }
+        SessionLock::remove(lock_path);
+        true
     }
 }
 
@@ -2063,10 +2268,17 @@ impl SonicSpike {
     }
 
     /// Persist all buffers to the workspace store (autosave + quit path).
+    /// Also refreshes the panic-safety snapshot (see `panic_snapshot`) —
+    /// crash-safety insurance that's independent of GPUI's own cleanup path:
+    /// a panic skips `on_app_quit` entirely, so without this a crash would
+    /// be stuck with whatever the periodic tick last wrote, saved via a
+    /// path that assumes the executor is still healthy. The panic hook's
+    /// write doesn't.
     fn save_workspace(&self, cx: &App) {
         let texts: Vec<String> =
             self.buffers.iter().map(|b| b.read(cx).value().to_string()).collect();
         store::save_buffers(&self.store_dir, &texts);
+        *panic_snapshot().lock().unwrap() = Some((self.store_dir.clone(), texts));
     }
 
     /// Associate `path` with buffer `i`: sticky save target, file-stem tab
@@ -2385,7 +2597,31 @@ impl SonicSpike {
                     cx,
                 )
             })
-            ;
+            .when(self.backend.is_gig(), |row| {
+                row.child(
+                    div()
+                        .text_xs()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(cx.theme().danger)
+                        .text_color(cx.theme().danger_foreground)
+                        .child("GIG"),
+                )
+                .child(self.a11y_ctl(
+                    "a11y-stop-performance",
+                    "Stop performance — end the gig session for good",
+                    Cmd::StopPerformance,
+                    Button::new("stop-performance")
+                        .danger()
+                        .outline()
+                        .label("⏏ Stop Performance")
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.dispatch(Cmd::StopPerformance, w, cx)),
+                        )
+                        .into_any_element(),
+                    cx,
+                ))
+            });
 
         h_flex()
             .w_full()
@@ -3131,6 +3367,33 @@ impl SonicSpike {
                 self.show_debug = !self.show_debug;
                 cx.notify();
             }
+            Cmd::StopPerformance => {
+                let weak = cx.entity().downgrade();
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    let weak = weak.clone();
+                    alert
+                        .title("Stop Performance?")
+                        .description(
+                            "This ends the running gig session for good — Spider and the \
+                             audio engine will be stopped and this app will no longer be \
+                             able to reattach to them. Only the buffers you've saved survive.",
+                        )
+                        .show_cancel(true)
+                        .on_ok(move |_, _, app| {
+                            if let Some(ent) = weak.upgrade() {
+                                ent.update(app, |this, cx| {
+                                    if this.backend.stop_performance() {
+                                        this.log.push(LogLine::info(
+                                            "→ Performance stopped — session ended.".to_string(),
+                                        ));
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                            true
+                        })
+                });
+            }
         }
     }
 
@@ -3852,7 +4115,46 @@ impl Render for SonicSpike {
     }
 }
 
+/// Crash-safety insurance (`plan/04-gig-hardening.md`): the most recent
+/// `(store_dir, buffer texts)` refreshed by every `save_workspace` call
+/// (the periodic 5s autosave, plus save-on-quit). A panic hook has no
+/// window/`Context` to call back into GPUI with, so this is a plain
+/// `std::sync` snapshot rather than anything GPUI-specific — the hook just
+/// needs to flush already-known strings to disk.
+static PANIC_SNAPSHOT: std::sync::OnceLock<Mutex<Option<(PathBuf, Vec<String>)>>> =
+    std::sync::OnceLock::new();
+
+fn panic_snapshot() -> &'static Mutex<Option<(PathBuf, Vec<String>)>> {
+    PANIC_SNAPSHOT.get_or_init(|| Mutex::new(None))
+}
+
+/// What the panic hook does with a snapshot, factored out so it's testable
+/// without installing the actual process-global panic hook (cargo test runs
+/// tests in parallel in one process — swapping the real hook mid-suite would
+/// risk interfering with any other test's panics).
+fn flush_panic_snapshot(snapshot: &(PathBuf, Vec<String>)) -> usize {
+    store::save_buffers(&snapshot.0, &snapshot.1)
+}
+
+/// Best-effort save-then-crash: writes the last snapshot `save_workspace`
+/// recorded, then runs the normal panic hook (backtrace, abort/unwind) as
+/// before — this only adds a write, it never changes crash behaviour.
+fn install_panic_safety_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(snapshot) = panic_snapshot().lock().unwrap().as_ref() {
+            let saved = flush_panic_snapshot(snapshot);
+            eprintln!(
+                "sonic-oxide: panic — saved {saved} buffer(s) to {} before crashing",
+                snapshot.0.display()
+            );
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
+    install_panic_safety_hook();
     let app = gpui_platform::application().with_assets(Assets);
     app.run(|cx| {
         gpui_component::init(cx);

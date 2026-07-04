@@ -29,6 +29,7 @@ minutes; after that it's seconds.
 | Var | Effect |
 |---|---|
 | `SONIC_OXIDE_DAEMON=1` | boot via classic daemon.rb instead of the supervisor (A/B oracle) |
+| `SONIC_OXIDE_GIG=1` | gig mode (plan `04-gig-hardening.md`): a fresh supervisor boot detaches from this process — Spider/SuperSonic outlive a crash or quit. A relaunched app auto-reattaches (no flag needed for that half); "⏏ Stop Performance" in the header ends it explicitly. Linux only for now. |
 | `SONIC_OXIDE_APP_ROOT` | where the Sonic Pi `app/` runtime lives (bundles set this) |
 | `SONIC_OXIDE_RUBY` | explicit ruby interpreter (else bundled, else system) |
 | `SONIC_OXIDE_LANG` | UI language (else the `lang` pref, else `LANG`; locales in `etc/i18n/`) |
