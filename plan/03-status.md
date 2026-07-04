@@ -505,6 +505,25 @@ the Phase-0 Qt copy fix still needs its one-time Qt build + smoke test.)
 - Remotes: origin = ThomasRedstone/sonic-pi (the fork, push target),
   upstream = sonic-pi-net/sonic-pi.
 
+## Done 2026-07-04 (help parity, tutorial images, launcher, highlighting)
+
+- Help pane = Qt help tabs: category browser (Synths/FX/Samples/Functions/
+  Notes/Scales/Chords), markdown doc pages (uncapped), structured OptDoc
+  parse — which also fixed completions' silently-empty opt defaults.
+- Tutorial diagrams render: gpui-component FORK
+  (ThomasRedstone/gpui-component @ local-image-paths) patches markdown
+  images with scheme-less URLs to load from disk; chapter loader
+  absolutises relative paths (real-repo test: all 26 images resolve).
+  UPSTREAM PR PENDING — the fork is our only divergence; drop the pin
+  back to longbridge once merged.
+- `make install-launcher`: desktop menu entry → release binary wrapper.
+- GOTCHA (dep bumps WILL re-hit this class of bug): gpui-component ships
+  NO default features — grammars are opt-in, and `code_editor("ruby")`
+  SILENTLY renders plain text without `tree-sitter-ruby`. Syntax
+  highlighting was off from day one and nobody noticed until 2026-07-04.
+  When a feature "ships with the widget" but doesn't appear, check the
+  feature flags before the code.
+
 ## Environment gotchas (will bite a fresh session)
 
 - gpui-spike builds with **nightly 1.95** (`rust-toolchain.toml` handles it);
