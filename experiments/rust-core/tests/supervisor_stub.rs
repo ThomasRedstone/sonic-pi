@@ -49,6 +49,23 @@ fn no_leftovers(marker: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Poll `check` up to `timeout`, for assertions whose true deadline is "the
+/// kernel gets around to it" rather than a fixed duration — a flat sleep
+/// here is exactly the kind of thing that flakes when the whole test suite
+/// (many concurrent processes) is contending for CPU.
+fn poll_until(timeout: std::time::Duration, mut check: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if check() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return check(); // one last try right at the deadline
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn boots_stub_children_and_shuts_them_down_verified() {
     let root = stub_app_root("ok", true);
@@ -155,6 +172,9 @@ fn gig_mode_drop_leaves_children_running() {
 
         // sup dropped here — Gig mode must leave both children running.
     }
+    // Give a heavily-loaded test run (many concurrent processes) room to
+    // schedule things — this only needs to observe "still running", which
+    // was already true the instant `boot()` returned.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(
         !no_leftovers("sonic_oxide_sup_stub_gig_drop"),
@@ -168,8 +188,12 @@ fn gig_mode_drop_leaves_children_running() {
         libc::kill(spider_pid as i32, libc::SIGKILL);
         libc::kill(supersonic_pid as i32, libc::SIGKILL);
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    assert!(no_leftovers("sonic_oxide_sup_stub_gig_drop"), "manual cleanup must reap both");
+    assert!(
+        poll_until(std::time::Duration::from_secs(3), || {
+            no_leftovers("sonic_oxide_sup_stub_gig_drop")
+        }),
+        "manual cleanup must reap both"
+    );
     let _ = std::fs::remove_file(format!("/dev/shm/SuperSonic_{scsynth}"));
     let _ = std::fs::remove_dir_all(&root);
 }

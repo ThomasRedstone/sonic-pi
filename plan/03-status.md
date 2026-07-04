@@ -595,11 +595,10 @@ generates code, only the final native link is unavailable locally. Real
 tests exist for both — spawn a real child, exercise the real OS mechanism,
 assert the outcome — gated to run automatically under CI's existing
 `cargo test --lib` on `windows-latest`/`macos-latest` (no new CI jobs
-needed). **Result of the actual CI run**: pending at time of writing — a
-monitor is watching; update this line once it lands, don't assume PASS
-just because the local cross-compile succeeded (that was true of the shm
-backend too, but "compiles" and "correct OS-level behavior" are different
-claims).
+needed). **Result of the actual CI run: PASS on both.** `rust-core (Windows)` and
+`rust-core (macOS)` both green on the first real run — the Job Object
+kill-on-close and the kqueue exit-watch both behave exactly as designed
+on their real target OSes, not just "compiles."
 
 The macOS primitive is deliberately NOT yet wired into a real watchdog
 process — that needs a way to locate a separate watchdog executable at
@@ -630,6 +629,27 @@ is a standing decision to revisit later, not a task.
 Also still open (see above): the `local-image-paths` gpui-component fork
 patch should be PR'd upstream — Tom's call on when, five-minute action via
 `gh`.
+
+## Test-suite note: pre-existing port/shm race under REAL concurrent load (2026-07-04)
+
+Chasing a one-off `cargo test --all-targets` failure, hardened
+`gig_mode_drop_leaves_children_running`'s cleanup-verification to poll
+with a deadline instead of a flat sleep (genuine improvement, kept).
+While stress-testing the fix, found the ACTUAL flake is pre-existing and
+unrelated to this session's changes: running TWO full `cargo test`
+invocations at the same time on this machine reliably fails
+`boot_times_out_when_the_engine_never_publishes` and `drop_reaps_children`
+(both predate today) — `free_udp_port()`'s check-then-bind pattern and
+`/dev/shm/SuperSonic_<port>` naming can collide when genuinely separate
+test PROCESSES race for the same port, a documented tiny window
+(`supervisor.rs`'s `free_udp_port` doc comment) that becomes non-tiny
+under this specific stress. A SINGLE `cargo test --all-targets` invocation
+— the actual pattern every CI job here uses (one isolated VM, one
+invocation) — stayed reliably green across 8+ repeated runs; the failure
+mode needs a second, independent `cargo test` process running at the same
+time, which isn't how this project's CI works. Recorded rather than fixed:
+a real fix means either serial-only port+shm-name allocation for tests or
+a wider port-range lottery, and wasn't in scope tonight.
 
 ## Environment gotchas (will bite a fresh session)
 
