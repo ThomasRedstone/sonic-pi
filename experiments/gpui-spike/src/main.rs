@@ -1174,17 +1174,28 @@ impl Backend {
                 // We never held Child handles for these — the only way to
                 // stop them is by PID, same as the manual cleanup in the
                 // gig-mode integration tests. TERM first, brief grace
-                // period, then KILL anything still standing.
-                for pid in [*spider_pid, *supersonic_pid] {
-                    unsafe {
-                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                // period, then KILL anything still standing. Gig mode is
+                // Linux-only for now (see BootMode's doc comment in
+                // supervisor.rs) — this is where a phase-9 Windows/mac port
+                // would plug in Job-Object/kqueue-based termination instead.
+                #[cfg(unix)]
+                {
+                    for pid in [*spider_pid, *supersonic_pid] {
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                    for pid in [*spider_pid, *supersonic_pid] {
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(500));
-                for pid in [*spider_pid, *supersonic_pid] {
-                    unsafe {
-                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
-                    }
+                #[cfg(not(unix))]
+                {
+                    let _ = (spider_pid, supersonic_pid);
+                    eprintln!("sonic-oxide: Stop Performance isn't implemented on this OS yet");
                 }
             }
             Runtime::DaemonRb(_) => {} // gig mode never produces this combination
