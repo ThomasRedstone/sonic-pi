@@ -564,6 +564,23 @@ deviation (inline overlay buttons → a below-markdown strip; equivalent
 functionality, `range_to_bounds` turned out to be editor-only, not
 available on the markdown TextView).
 
+## ◕ PHASE 10 (editor power) — audit done, hover docs shipped (2026-07-04)
+
+Audited before building (per the plan's explicit instruction, given the
+folding/highlighting gotcha from earlier): **hover docs** turned out to be
+another near-free win — `gpui-component` ships a `HoverProvider` trait
+mirroring the `CompletionProvider` we already use, so `SonicHover` (+ a new
+`vocab::word_at` pure helper, unit tested) now shows the Help pane's
+markdown doc for any synth/fx/sample/fn/opt name on hover, in every
+buffer and the tutorial scratch buffer. **Multi-caret and keyboard fold
+toggle are CONFIRMED (not assumed) upstream-blocked** — grepped the
+source: no multi-cursor trace anywhere; fold mutation lives behind a
+`pub(super)` field with no public entry point. Inline diagnostic-on-hover
+has a viable path (SonicHover could check diagnostics too) but needs
+mirrored state to reach them from the provider trait — scoped as a
+deferred follow-up, not attempted this pass. See `08-editor-power.md` for
+the full audit writeup.
+
 ## Post-parity phases (2026-07-04)
 
 Loop/product parity (Tiers 1-2) and the foundation workstream (harness,
