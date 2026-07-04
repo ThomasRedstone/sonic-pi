@@ -14,12 +14,15 @@ rustfft = "6"  # spectrum analysis (KissFFT replacement, see AudioProcessor)
 libc = "0.2"   # POSIX shm_open/mmap + supervisor signals
 
 [target.'cfg(windows)'.dependencies]
-# Named-section shared memory (CreateFileMappingW/MapViewOfFile) — the
-# Windows half of audio::shm's Mapping.
+# Named-section shared memory (CreateFileMappingW/MapViewOfFile, the
+# Windows half of audio::shm's Mapping) + Job Objects (kill-on-close, the
+# Windows equivalent of PR_SET_PDEATHSIG — see supervisor.rs's WinJob).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Memory",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }
 
 # Runnable demonstration of the contract without a full Sonic Pi runtime:

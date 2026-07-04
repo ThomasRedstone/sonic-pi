@@ -59,6 +59,12 @@ pub struct Supervisor {
     supersonic: Child,
     spider: Child,
     mode: BootMode,
+    /// `Some` only for a `BootMode::Normal` boot on Windows — see `WinJob`.
+    /// Held for `Supervisor`'s lifetime purely so its `Drop` (CloseHandle)
+    /// doesn't run early; the kill-on-close behaviour itself needs no
+    /// Rust-side code to fire on a crash.
+    #[cfg(windows)]
+    _job: Option<WinJob>,
 }
 
 /// Ask the OS for a free UDP port on localhost. Same freshness guarantee as
@@ -164,6 +170,82 @@ fn die_with_parent(cmd: &mut Command, mode: BootMode) {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
             Ok(())
         });
+    }
+}
+
+/// Windows equivalent of Linux's `PR_SET_PDEATHSIG` (plan
+/// `07-platforms-release.md`, phase 9): a "kill on close" Job Object.
+/// Assigning a child process to this job means the OS terminates it
+/// automatically when the LAST handle to the job closes — which happens
+/// implicitly, no code required, when this process exits for ANY reason
+/// (clean exit, crash, or `TerminateProcess`). Symmetric with the Unix
+/// side: `BootMode::Gig` simply never creates/assigns one, so its children
+/// are never in a kill-on-close job and survive this process independently
+/// — the two platforms reach the same gig-mode guarantee by different
+/// mechanisms.
+#[cfg(windows)]
+struct WinJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl WinJob {
+    fn create() -> io::Result<WinJob> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                let e = io::Error::last_os_error();
+                CloseHandle(job);
+                return Err(e);
+            }
+            Ok(WinJob(job))
+        }
+    }
+
+    /// Put `child` under this job's kill-on-close rule.
+    fn assign(&self, child: &Child) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        unsafe {
+            let handle = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+            if AssignProcessToJobObject(self.0, handle) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+// SAFETY: a Job Object HANDLE is just a kernel object reference; Windows
+// itself makes no thread-affinity requirement on HANDLE values (unlike,
+// say, raw window handles) — sending/sharing this across threads is the
+// same operation the win32 API itself allows from any thread.
+#[cfg(windows)]
+unsafe impl Send for WinJob {}
+#[cfg(windows)]
+unsafe impl Sync for WinJob {}
+
+#[cfg(windows)]
+impl Drop for WinJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
     }
 }
 
@@ -278,7 +360,40 @@ impl Supervisor {
             }
         };
 
-        Ok(Supervisor { ports, supersonic, spider, mode })
+        // Windows crash-safety: put both children under one kill-on-close
+        // Job Object in Normal mode (mirrors skipping PR_SET_PDEATHSIG on
+        // Unix for Gig mode — see WinJob's doc comment). Best-effort: a
+        // failure here shouldn't fail the whole boot, since the runtime is
+        // otherwise fully functional without it — just log and continue.
+        #[cfg(windows)]
+        let job = if mode == BootMode::Normal {
+            match WinJob::create() {
+                Ok(job) => {
+                    if let Err(e) = job.assign(&supersonic) {
+                        eprintln!("sonic-oxide: job-object assign (supersonic) failed: {e}");
+                    }
+                    if let Err(e) = job.assign(&spider) {
+                        eprintln!("sonic-oxide: job-object assign (spider) failed: {e}");
+                    }
+                    Some(job)
+                }
+                Err(e) => {
+                    eprintln!("sonic-oxide: job-object create failed ({e}); no crash-safety net on this boot");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Supervisor {
+            ports,
+            supersonic,
+            spider,
+            mode,
+            #[cfg(windows)]
+            _job: job,
+        })
     }
 
     pub fn mode(&self) -> BootMode {
@@ -390,6 +505,39 @@ impl Drop for Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The actual crash-safety property, exercised for real on Windows CI
+    /// (the local dev machine has no Windows to run this on — see
+    /// `plan/07-platforms-release.md`). A Job Object's kill-on-close rule
+    /// fires on the LAST handle to the job closing, and Windows makes no
+    /// distinction between "closed because the process exited" and
+    /// "closed explicitly" — so `drop(job)` here exercises the exact same
+    /// mechanism a real crash would trigger, without needing a second
+    /// process to simulate one dying.
+    #[test]
+    #[cfg(windows)]
+    fn win_job_kills_its_child_when_the_job_handle_closes() {
+        // A long-running, always-present Windows command (~30s of pings) —
+        // no untrusted input, a fixed literal string.
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 31 127.0.0.1 >NUL"])
+            .spawn()
+            .expect("spawn a long-running child");
+        assert!(matches!(child.try_wait(), Ok(None)), "child should still be starting up/running");
+
+        let job = WinJob::create().expect("create job object");
+        job.assign(&child).expect("assign child to job");
+        drop(job); // the trigger: last handle to the job closes
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(Some(_)) = child.try_wait() {
+                break; // killed — the property under test
+            }
+            assert!(Instant::now() < deadline, "child survived the job handle closing");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 
     #[test]
     fn allocates_free_ports_that_rebind() {
