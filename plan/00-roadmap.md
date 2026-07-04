@@ -160,7 +160,7 @@ map.
 
 | Phase | Ships | Why it's worth doing | Plan |
 |------:|-------|-----------------------|------|
-| **6** | Gig-hardening — the runtime survives a GUI crash/relaunch; fuzzed OSC parsing; soak-tested | The one thing Qt never had; the most differentiated thing Oxide can be | [`04-gig-hardening.md`](./04-gig-hardening.md) |
+| **6** | ✅ Gig-hardening — the runtime survives a GUI crash/relaunch; fuzzed OSC parsing; soak-tested | The one thing Qt never had; the most differentiated thing Oxide can be | [`04-gig-hardening.md`](./04-gig-hardening.md) |
 | **7** | Teaching mode — runnable code blocks in the tutorial, first-run flow | Sonic Pi's identity is learn-by-sound; the tutorial renders but doesn't teach yet | [`05-teaching-mode.md`](./05-teaching-mode.md) |
 | **8** | Performance UI — full-screen mode, projector-scale type, MIDI-controller-mappable actions | Only worth building once daily use says what's actually reached for | [`06-performance-ui.md`](./06-performance-ui.md) |
 | **9** | Platforms & release — mac/win apps, README + versioned releases, the "go public?" decision | Hardware-gated for the app half; the release half is a product decision | [`07-platforms-release.md`](./07-platforms-release.md) |

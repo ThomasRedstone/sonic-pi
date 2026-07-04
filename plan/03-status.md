@@ -524,6 +524,27 @@ the Phase-0 Qt copy fix still needs its one-time Qt build + smoke test.)
   When a feature "ships with the widget" but doesn't appear, check the
   feature flags before the code.
 
+## ✅ PHASE 6 (gig-hardening) SUBSTANTIALLY COMPLETE (2026-07-04)
+
+Full implementation + machine verification of `plan/04-gig-hardening.md`:
+`session_lock` module (fail-closed PID-reuse-safe reattach gate),
+`BootMode::Gig` (skips PDEATHSIG + Drop-triggered shutdown),
+`SONIC_OXIDE_GIG=1` detached boot, auto-reattach on relaunch, explicit
+"⏏ Stop Performance" action, panic-safe autosave snapshot, a fuzz-lite OSC
+harness (zero new deps, runs in every `cargo test`), and a soak-test
+harness (`make soak`) — PASS on a 60s local run (stable RSS, scope live).
+The capstone: `examples/gig_reattach_check.rs` (`make e2e`) proves the
+WHOLE story end-to-end against the real Spider+SuperSonic runtime — boot
+gig, simulate a crash, confirm survival, reattach from the lock file
+alone, run through the reattached session, explicit stop, confirm the
+lock reads dead. PASS. Surfaced one genuine OS-mechanics subtlety (zombie
+reaping only applies to whoever is the real parent) — documented in
+`04-gig-hardening.md` so it doesn't confuse future debugging.
+**Only remaining item**: Tom's own hands-on "kill -9 my real running GUI,
+confirm sound never stopped" check, plus a real multi-hour soak on
+hardware before trusting this on an actual stage — neither is
+automatable.
+
 ## Post-parity phases (2026-07-04)
 
 Loop/product parity (Tiers 1-2) and the foundation workstream (harness,
