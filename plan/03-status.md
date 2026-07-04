@@ -524,6 +524,23 @@ the Phase-0 Qt copy fix still needs its one-time Qt build + smoke test.)
   When a feature "ships with the widget" but doesn't appear, check the
   feature flags before the code.
 
+## Post-parity phases (2026-07-04)
+
+Loop/product parity (Tiers 1-2) and the foundation workstream (harness,
+cross-platform core, editor a11y) are DONE. Five follow-on phases are now
+planned in numbered files, referenced from `00-roadmap.md`'s "Post-parity
+phases" table: `04-gig-hardening.md`, `05-teaching-mode.md`,
+`06-performance-ui.md`, `07-platforms-release.md`, `08-editor-power.md`.
+Recommended order: gig-hardening first (most differentiated, purely
+engineering); teaching-mode alongside it; performance-ui and editor-power
+are driven by what daily use surfaces, not a fixed schedule; platforms
+half of phase 9 starts whenever mac/win hardware exists, the release half
+is a standing decision to revisit later, not a task.
+
+Also still open (see above): the `local-image-paths` gpui-component fork
+patch should be PR'd upstream — Tom's call on when, five-minute action via
+`gh`.
+
 ## Environment gotchas (will bite a fresh session)
 
 - gpui-spike builds with **nightly 1.95** (`rust-toolchain.toml` handles it);

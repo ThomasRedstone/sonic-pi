@@ -147,3 +147,32 @@ Spike a GPUI app (`experiments/gpui-spike/`) with the gpui-component editor +
 docked panes, then **test a screen reader against it** (the make-or-break
 unknown) and prototype the scope by feeding the shm ring into a GPUI canvas. If
 both pass, proceed with the phased plan above.
+
+## Post-parity phases (2026-07-04 — proposed, not yet started)
+
+Parity with Qt (loop + product) and the foundation workstream (conformance
+harness, cross-platform core, editor a11y glyph metrics) are done — see
+`03-status.md`. Retiring Qt (phase 4 above) is gated on *sustained daily use*,
+which takes calendar time, not engineering time. These five phases are what to
+spend that time on — they ask what Sonic Oxide should become, not just what
+Sonic Pi already was. Each has its own numbered plan file; this table is the
+map.
+
+| Phase | Ships | Why it's worth doing | Plan |
+|------:|-------|-----------------------|------|
+| **6** | Gig-hardening — the runtime survives a GUI crash/relaunch; fuzzed OSC parsing; soak-tested | The one thing Qt never had; the most differentiated thing Oxide can be | [`04-gig-hardening.md`](./04-gig-hardening.md) |
+| **7** | Teaching mode — runnable code blocks in the tutorial, first-run flow | Sonic Pi's identity is learn-by-sound; the tutorial renders but doesn't teach yet | [`05-teaching-mode.md`](./05-teaching-mode.md) |
+| **8** | Performance UI — full-screen mode, projector-scale type, MIDI-controller-mappable actions | Only worth building once daily use says what's actually reached for | [`06-performance-ui.md`](./06-performance-ui.md) |
+| **9** | Platforms & release — mac/win apps, README + versioned releases, the "go public?" decision | Hardware-gated for the app half; the release half is a product decision | [`07-platforms-release.md`](./07-platforms-release.md) |
+| **10** | Editor power — multi-caret, keyboard folding, hover docs, inline diagnostics | Steady accumulation; mostly upstream-adjacent, low risk | [`08-editor-power.md`](./08-editor-power.md) |
+
+**Recommended order:** 6 → 7, run in parallel with the daily-use clock; 9's
+platform half starts whenever hardware is available; 8 and 10 are driven by
+what daily use actually surfaces, not a fixed schedule.
+
+**Deliberately not a phase:** replacing Spider with a Rust-native music
+language. User code is Ruby: this DSL, this interpreter — a "rewrite" would
+mean embedding an interpreter for it, reopening the settled keep-Spider
+decision, and duplicating what upstream Sonic Pi actively maintains. The
+measured baseline (`03-status.md`: boot ~2s, run-ack <5ms) shows this isn't a
+performance problem looking for a solution.
