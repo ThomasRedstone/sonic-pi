@@ -23,6 +23,7 @@
 //! path) and TOML audio options — the daemon.rb route stays available as the
 //! A/B fallback until they land.
 
+use std::io;
 use std::net::UdpSocket;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -30,7 +31,22 @@ use std::time::{Duration, Instant};
 
 use crate::paths::{resolve, SonicPiPath};
 use crate::ports::Ports;
+use crate::session_lock::{pid_start_time, SessionLock};
 use crate::CoreError;
+
+/// Normal mode ties the children's lives to this process (today's crash
+/// safety net); Gig mode deliberately does the opposite — see
+/// `plan/04-gig-hardening.md`. Only meaningful on Linux today: `Gig` mode's
+/// two guarantees (children survive a killed parent, AND a relaunched app
+/// can verify + reattach to them) both currently rely on Linux-only
+/// mechanisms (skipping `PR_SET_PDEATHSIG`, and `/proc`-based PID-reuse
+/// detection in `session_lock`). Elsewhere, `Gig` silently behaves like
+/// `Normal` — see `boot`'s doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootMode {
+    Normal,
+    Gig,
+}
 
 /// `SupersonicBooter::DEFAULT_OPTS`, in order.
 const SUPERSONIC_DEFAULT_OPTS: &[&str] = &[
@@ -42,6 +58,7 @@ pub struct Supervisor {
     pub ports: Ports,
     supersonic: Child,
     spider: Child,
+    mode: BootMode,
 }
 
 /// Ask the OS for a free UDP port on localhost. Same freshness guarantee as
@@ -132,9 +149,14 @@ fn user_audio_settings() -> Vec<(String, String)> {
 /// exits for any reason. This is the crash-safety net that replaces the
 /// daemon's keep-alive kill switch. No-op elsewhere (mac: no PDEATHSIG
 /// equivalent — crash-safety gap documented in plan v2; win: Job Objects,
-/// future work).
+/// future work) — and deliberately skipped in `BootMode::Gig`, where the
+/// whole point is that the children OUTLIVE this process (see
+/// `plan/04-gig-hardening.md`).
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-fn die_with_parent(cmd: &mut Command) {
+fn die_with_parent(cmd: &mut Command, mode: BootMode) {
+    if mode == BootMode::Gig {
+        return;
+    }
     #[cfg(target_os = "linux")]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -148,7 +170,10 @@ fn die_with_parent(cmd: &mut Command) {
 impl Supervisor {
     /// Allocate ports, boot SuperSonic (waiting for its shm segment to
     /// publish), then boot Spider. `app_root` is the Sonic Pi `app/` dir.
-    pub fn boot(app_root: &Path) -> Result<Supervisor, CoreError> {
+    /// `mode` selects crash-safety behaviour: `Normal` ties the children's
+    /// lives to this process (today's default everywhere); `Gig` lets them
+    /// outlive it (Linux only for now — see `BootMode`'s doc comment).
+    pub fn boot(app_root: &Path, mode: BootMode) -> Result<Supervisor, CoreError> {
         let paths = resolve(app_root);
         let supersonic_bin = app_root.join("server/native/supersonic");
         let spider_rb = paths[&SonicPiPath::ServerBin].join("spider-server.rb");
@@ -197,7 +222,7 @@ impl Supervisor {
         }
         let (out, err) = stdio();
         cmd.stdout(out).stderr(err);
-        die_with_parent(&mut cmd);
+        die_with_parent(&mut cmd, mode);
         let supersonic =
             cmd.spawn().map_err(|e| CoreError::Spawn(format!("spawning supersonic: {e}")))?;
 
@@ -242,7 +267,7 @@ impl Supervisor {
             .arg(token.to_string());
         let (out, err) = stdio();
         cmd.stdout(out).stderr(err);
-        die_with_parent(&mut cmd);
+        die_with_parent(&mut cmd, mode);
         let spider = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -253,7 +278,51 @@ impl Supervisor {
             }
         };
 
-        Ok(Supervisor { ports, supersonic, spider })
+        Ok(Supervisor { ports, supersonic, spider, mode })
+    }
+
+    pub fn mode(&self) -> BootMode {
+        self.mode
+    }
+
+    /// Write a gig-mode session lock recording both children's PIDs + start
+    /// times (the PID-reuse guard) and the port table — what a relaunched
+    /// GUI needs to reattach without respawning anything. Only meaningful
+    /// after a `BootMode::Gig` boot; callers should not call this for a
+    /// `Normal` boot (there is nothing useful to reattach to — the children
+    /// die with this process by design in that mode).
+    pub fn write_session_lock(&self, path: &Path) -> io::Result<()> {
+        let start_time_of = |pid: u32| {
+            pid_start_time(pid).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("couldn't read start time for pid {pid} (child just spawned?)"),
+                )
+            })
+        };
+        let lock = SessionLock {
+            token: self.ports.token,
+            spider_pid: self.spider.id(),
+            spider_started: start_time_of(self.spider.id())?,
+            supersonic_pid: self.supersonic.id(),
+            supersonic_started: start_time_of(self.supersonic.id())?,
+            daemon_port: self.ports.get(crate::ports::PortId::Daemon),
+            gui_listen: self.ports.get(crate::ports::PortId::GuiListenToSpider),
+            gui_send: self.ports.get(crate::ports::PortId::GuiSendToSpider),
+            scsynth: self.ports.get(crate::ports::PortId::Scsynth),
+            osc_cues: self.ports.get(crate::ports::PortId::TauOscCues),
+        };
+        lock.save(path)
+    }
+
+    /// Release the `Child` handles WITHOUT killing the processes — the
+    /// gig-mode "detach and let the GUI exit normally" path.
+    /// `std::process::Child`'s own `Drop` never kills on drop (only explicit
+    /// `.kill()` does), so simply dropping `self` here is already safe;
+    /// this method exists to make that intent explicit at call sites rather
+    /// than relying on an implicit-drop reader has to go verify.
+    pub fn detach(self) {
+        drop(self);
     }
 
     /// Graceful shutdown: TERM Spider first (it says goodbye to the engine),
@@ -297,7 +366,16 @@ impl Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        self.shutdown();
+        // Gig mode's entire point is that the children outlive this
+        // process — an implicit shutdown-on-drop here (e.g. the GUI simply
+        // exiting normally) would silently defeat it. `Child`'s own Drop
+        // never kills on drop, so doing nothing is exactly "detach".
+        // Explicit termination (crash recovery aside) goes through the
+        // dedicated "Stop performance" action instead, which calls
+        // `shutdown()` directly rather than relying on this Drop.
+        if self.mode == BootMode::Normal {
+            self.shutdown();
+        }
     }
 }
 
@@ -314,7 +392,7 @@ mod tests {
 
     #[test]
     fn boot_fails_cleanly_without_a_runtime() {
-        let err = Supervisor::boot(Path::new("/nonexistent/app"));
+        let err = Supervisor::boot(Path::new("/nonexistent/app"), BootMode::Normal);
         assert!(err.is_err());
     }
 

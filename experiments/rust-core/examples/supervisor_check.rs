@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use sonicpi_core::supervisor::Supervisor;
+use sonicpi_core::supervisor::{BootMode, Supervisor};
 use sonicpi_core::{ApiClient, ClientEvent, Session};
 
 const QUIET_RUN: &str = "live_loop :sup do\n  sample :bd_haus, amp: 0\n  sleep 0.25\nend";
@@ -31,7 +31,7 @@ impl ApiClient for Counter {
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
     println!("booting via Rust supervisor (no daemon.rb)…");
-    let mut sup = Supervisor::boot(&root).expect("supervisor boot");
+    let mut sup = Supervisor::boot(&root, BootMode::Normal).expect("supervisor boot");
     let scsynth = sup.ports.get(sonicpi_core::PortId::Scsynth);
     println!("engine on {scsynth}, token {}", sup.ports.token);
 

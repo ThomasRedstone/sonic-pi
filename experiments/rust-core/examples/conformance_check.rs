@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sonicpi_core::supervisor::Supervisor;
+use sonicpi_core::supervisor::{BootMode, Supervisor};
 use sonicpi_core::{ApiClient, ClientEvent, Session};
 
 #[derive(Default)]
@@ -73,7 +73,7 @@ fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app");
     println!("booting via Rust supervisor…");
-    let mut sup = Supervisor::boot(&root).expect("supervisor boot");
+    let mut sup = Supervisor::boot(&root, BootMode::Normal).expect("supervisor boot");
     let seen = Arc::new(Seen::default());
     let session = Session::connect(&sup.ports, seen.clone()).expect("session");
     let mut failures: Vec<String> = Vec::new();

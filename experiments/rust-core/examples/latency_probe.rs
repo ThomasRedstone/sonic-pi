@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use sonicpi_core::audio::ScopeSlotReader;
 use sonicpi_core::osc::UdpOscSender;
 use sonicpi_core::rosc::{OscMessage, OscType};
-use sonicpi_core::supervisor::Supervisor;
+use sonicpi_core::supervisor::{BootMode, Supervisor};
 use sonicpi_core::{ApiClient, ClientEvent, PortId, Session};
 
 const QUIET_RUN: &str = "live_loop :probe do\n  sample :bd_haus, amp: 0\n  sleep 0.25\nend";
@@ -85,7 +85,7 @@ fn main() {
 
     // ── Boot → Spider ready ─────────────────────────────────────────────
     let t0 = Instant::now();
-    let mut sup = Supervisor::boot(&root).expect("supervisor boot");
+    let mut sup = Supervisor::boot(&root, BootMode::Normal).expect("supervisor boot");
     let stamps = Arc::new(Stamps::default());
     let session = Session::connect(
         &sup.ports,

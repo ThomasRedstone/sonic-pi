@@ -26,6 +26,7 @@ pub mod paths;
 pub mod ports;
 pub mod process;
 pub mod protocol;
+pub mod session_lock;
 pub mod supervisor;
 
 mod session;
